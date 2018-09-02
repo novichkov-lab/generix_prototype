@@ -2,6 +2,7 @@ import os
 import json
 from elasticsearch import Elasticsearch
 from neo4j.v1 import GraphDatabase
+from pymongo import MongoClient
 
 from .ontology import OntologyService
 from .validator import TermValueValidationService
@@ -10,6 +11,7 @@ from .search import SearchService
 from .provenance import ProvenanceIndexerService, ProvenanceSearchService
 from .workspace import Workspace
 from .typedef import TypeDefService
+from .es_service import ElasticSearchService
 
 
 __PACKAGE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -31,14 +33,16 @@ __neo4j_client = GraphDatabase.driver(
     auth=(__neo4j_config['user'], __neo4j_config['password']))
 
 
+__mongo_client = MongoClient(port=27017)
+
 ontology = OntologyService(__es_client)
-workspace = Workspace()
+typedef = TypeDefService(__TYPEDEF_FILE)
+workspace = Workspace(__mongo_client)
 
 es_indexer = SearchIndexerService(__es_client)
 es_search = SearchService(__es_client)
+es_service = ElasticSearchService(__es_client)
 neo_indexer = ProvenanceIndexerService()
 neo_search = ProvenanceSearchService(__neo4j_client)
 
-
 term_value_validator = TermValueValidationService()
-typedef = TypeDefService(__TYPEDEF_FILE)
