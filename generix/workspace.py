@@ -1,6 +1,7 @@
-from .brick import read_brick
+import json
 from . import services
-from .typedef import PROCESS_TYPE_NAME
+from .typedef import TYPE_NAME_PROCESS, TYPE_NAME_BRICK
+from .brick import Brick
 
 
 class DataHolder:
@@ -8,7 +9,7 @@ class DataHolder:
         self.__type_name = type_name
         self.__type_def = services.typedef.get_type_def(self.__type_name)
         self.__data = data
-        self.__guid = None
+        self.__id = None
 
     @property
     def type_name(self):
@@ -23,12 +24,15 @@ class DataHolder:
         return self.__data
 
     @property
-    def guid(self):
-        return self.__guid
+    def id(self):
+        return self.__id
 
-    def set_guid(self, val):
-        self.__guid = val
-        self.__data['guid'] = self.__guid
+    def set_id(self, val):
+        self.__id = val
+        self._set_data_id(val)
+
+    def _set_data_id(self, val):
+        self.__data['id'] = val
 
 
 class EntityDataHolder(DataHolder):
@@ -43,12 +47,24 @@ class EntityDataHolder(DataHolder):
 
 class ProcessDataHolder(DataHolder):
     def __init__(self, process_type_name, data):
-        super().__init__(PROCESS_TYPE_NAME, data)
+        super().__init__(TYPE_NAME_PROCESS, data)
         self.__process_type_name = process_type_name
 
     @property
     def process_type_name(self):
         return self.__process_type_name
+
+
+class BrickDataHolder(DataHolder):
+    def __init__(self, brick):
+        super().__init__(TYPE_NAME_BRICK, brick)
+
+    @property
+    def brick(self):
+        return self.data
+
+    def _set_data_id(self, val):
+        self.brick.set_id(val)
 
 
 class Workspace:
@@ -70,7 +86,7 @@ class Workspace:
     def __init_id_offsets(self):
         registered_type_names = set()
 
-        rows = self.__enigma_db.guid.find({})
+        rows = self.__enigma_db.id.find({})
         for row in rows:
             type_name = row['dtype']
             registered_type_names.add(type_name)
@@ -78,19 +94,23 @@ class Workspace:
 
         for type_name in services.typedef.get_type_names():
             if type_name not in registered_type_names:
-                self.__enigma_db.guid.insert_one(
+                self.__enigma_db.id.insert_one(
                     {'dtype': type_name, 'id_offset': 0})
                 self.__dtype_2_id_offset[type_name] = 0
 
-    def next_guid(self, type_name):
+    def next_id(self, type_name):
         id_offset = self.__dtype_2_id_offset[type_name]
         id_offset += 1
-        self.__enigma_db.guid.update_one(
+        self.__enigma_db.id.update_one(
             {"dtype": type_name},
             {"$set": {"id_offset": id_offset}}
         )
         self.__dtype_2_id_offset[type_name] = id_offset
         return Workspace.__ID_PATTERN % (type_name, id_offset)
+
+    def get_brick(self, brick_id):
+        data = self.__enigma_db.Brick.find_one({'brick_id': brick_id})
+        return Brick.read_dict(brick_id, data)
 
     # def next_id(self, dtype, text_id=None, file_name=None):
     #     id_offset = self.__dtype_2_id_offset.get(dtype)
@@ -132,65 +152,90 @@ class Workspace:
     #     file_name = self._get_file_name(brick_id)
     #     return read_brick(brick_id, file_name)
 
-    def save(self, entity_data_holders=None, process_data_holder=None):
+    def save(self, object_data_holders=None, process_data_holder=None):
 
-        # process entities
-        if entity_data_holders is not None:
-            for data_holder in entity_data_holders:
-
-                self._generate_guid(data_holder)
-                self._validate_entity(data_holder)
-                self._store_entity(data_holder)
-
-                self._index_es_entity(data_holder)
-                self._index_neo_entity(data_holder)
+        # process objects
+        if object_data_holders is not None:
+            for data_holder in object_data_holders:
+                self._generate_id(data_holder)
+                self._validate_object(data_holder)
+                self._store_object(data_holder)
+                self._index_es_object(data_holder)
+                self._index_neo_object(data_holder)
 
         # process processes
         if process_data_holder is not None:
             data_holder = process_data_holder
-            self._generate_guid(data_holder)
+            self._generate_id(data_holder)
             self._validate_process(data_holder)
             self._store_process(data_holder)
 
             self._index_es_process(data_holder)
             self._index_neo_process(data_holder)
 
-    def _generate_guid(self, data_holder):
+    def _generate_id(self, data_holder):
         # file_name = data_holder.file_name if data_holder.type_name == 'Brick' else None
         # pk_def = data_holder.type_def.pk_property_def
         # text_id = data_holder.data[pk_def.name] if pk_def is not None else None
-        # guid = self.next_id(data_holder.type_name,
+        # id = self.next_id(data_holder.type_name,
         #                     text_id=text_id, file_name=file_name)
-        guid = self.next_guid(data_holder.type_name)
-        data_holder.set_guid(guid)
+        id = self.next_id(data_holder.type_name)
+        data_holder.set_id(id)
 
-    # def _validate_brick(self, entity):
-    #     pass
-
-    def _validate_entity(self, data_holder):
-        data_holder.type_def.validate_data(data_holder.data)
+    def _validate_object(self, data_holder):
+        if type(data_holder) is EntityDataHolder:
+            pass
+            # data_holder.type_def.validate_data(data_holder.data)
+        elif type(data_holder) is BrickDataHolder:
+            pass
 
     def _validate_process(self, data_holder):
-        data_holder.type_def.validate_data(data_holder.data)
+        pass
+        # data_holder.type_def.validate_data(data_holder.data)
 
-    # def _store_brick(self, entity):
-    #     pass
+    def _store_object(self, data_holder):
+        type_name = data_holder.type_name
+        pk_id = data_holder.id
+        upk_id = None
 
-    def _store_entity(self, data_holder):
-        self._store(data_holder)
+        if type(data_holder) is EntityDataHolder:
+            upk_prop_name = data_holder.type_def.upk_property_def.name
+            upk_id = data_holder.data[upk_prop_name]
+
+            self.__enigma_db.get_collection(
+                data_holder.type_name).insert_one(data_holder.data)
+        elif type(data_holder) is BrickDataHolder:
+            upk_id = data_holder.brick.name
+            data_json = data_holder.brick.to_json()
+            data = json.loads(data_json)
+            self.__enigma_db.get_collection(
+                data_holder.type_name).insert_one(data)
+
+        self._store_object_type_ids(type_name, pk_id, upk_id)
+
+    def _get_pk_id(self, type_name, upk_id):
+        res = self.__enigma_db.get_collection('object_type_ids').find_one({
+            "type_name": type_name,
+            "upk_id": upk_id
+        })
+        return res['pk_id']
+
+    def _store_object_type_ids(self, type_name, pk_id, upk_id):
+        self.__enigma_db.get_collection('object_type_ids').insert_one({
+            'type_name': type_name,
+            'pk_id': pk_id,
+            'upk_id': upk_id
+        })
 
     def _store_process(self, data_holder):
-        self._store(data_holder)
-
-    def _store(self, data_holder):
         self.__enigma_db.get_collection(
             data_holder.type_name).insert_one(data_holder.data)
 
-    def _index_es_brick(self, data_holder):
-        pass
-
-    def _index_es_entity(self, data_holder):
-        services.es_service.index_data(data_holder)
+    def _index_es_object(self, data_holder):
+        if type(data_holder) is EntityDataHolder:
+            services.es_service.index_data(data_holder)
+        elif type(data_holder) is BrickDataHolder:
+            services.es_service.index_brick(data_holder)
 
     def _index_es_process(self, data_holder):
         services.es_service.index_data(data_holder)
@@ -198,11 +243,14 @@ class Workspace:
     def _mark_as_indexed_es(self, entity_or_process):
         pass
 
-    def _index_neo_entity(self, entity):
-        pass
+    def _index_neo_object(self, data_holder):
+        if type(data_holder) is EntityDataHolder:
+            services.neo_service.index_entity(data_holder)
+        elif type(data_holder) is BrickDataHolder:
+            services.neo_service.index_brick(data_holder)
 
-    def _index_neo_process(self, process):
-        pass
+    def _index_neo_process(self, data_holder):
+        services.neo_service.index_processes(data_holder)
 
     def _mark_as_indexed_neo(self, entity_or_process):
         pass

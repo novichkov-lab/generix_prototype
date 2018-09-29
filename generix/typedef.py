@@ -1,10 +1,12 @@
 import re
 import json
-from .utils import check_term_format, parse_term
+from .utils import to_es_type_name
 from .ontology import Term
 
 
-PROCESS_TYPE_NAME = 'Process'
+TYPE_NAME_PROCESS = 'Process'
+TYPE_NAME_BRICK = 'Brick'
+ES_TYPE_NAME_BRICK = to_es_type_name(TYPE_NAME_BRICK)
 
 
 class PropertyValidator:
@@ -89,14 +91,14 @@ class PropertyTermValidator(PropertyValidator):
             self.__root_term.refresh()
 
     def validate_type(self, property_name, property_value):
-        if type(property_value) is not str or not check_term_format(property_value):
+        if type(property_value) is not str or not Term.check_term_format(property_value):
             raise ValueError(
                 'Wrong property type: the value of "%s" property is not term (%s)'
                 % (property_name, property_value))
 
     def validate_value(self, property_name, property_value):
         if self.validatable:
-            term = parse_term(property_value)
+            term = Term.parse_term(property_value)
             term.refresh()
 
             root_term_id = self.__root_term.term_id
@@ -127,12 +129,18 @@ class TypeDef:
         self.__name = name
         self.__property_defs = {}
         for pdoc in type_def_doc['fields']:
-            self.__property_defs[pdoc['name']] = PropertyDef(pdoc)
+            self.__property_defs[pdoc['name']] = PropertyDef(self, pdoc)
 
         self.__pk_property_def = None
         for pdef in self.__property_defs.values():
             if pdef.is_pk:
                 self.__pk_property_def = pdef
+                break
+
+        self.__upk_property_def = None
+        for pdef in self.__property_defs.values():
+            if pdef.is_upk:
+                self.__upk_property_def = pdef
                 break
 
         self.__fk_property_defs = []
@@ -180,7 +188,11 @@ class TypeDef:
 
     @property
     def pk_property_def(self):
-        self.__pk_property_def
+        return self.__pk_property_def
+
+    @property
+    def upk_property_def(self):
+        return self.__upk_property_def
 
     @property
     def fk_property_defs(self):
@@ -216,7 +228,8 @@ class TypeDef:
 
 
 class PropertyDef:
-    def __init__(self, pdef_doc):
+    def __init__(self, type_def, pdef_doc):
+        self.__type_def = type_def
         self.__name = pdef_doc['name']
         self.__type = pdef_doc['type']
         self.__required = pdef_doc['required'] if 'required' in pdef_doc else False
@@ -224,6 +237,8 @@ class PropertyDef:
         self.__comment = pdef_doc.get('comment')
         self.__pk = 'PK' in pdef_doc and pdef_doc['PK'] == True
         self.__fk = 'FK' in pdef_doc and pdef_doc['FK'] == True
+        self.__upk = 'UPK' in pdef_doc and pdef_doc['UPK'] == True
+        self.__term_id = pdef_doc['term_id'] if 'term_id' in pdef_doc else False
 
         self.__property_validator = _PROPERTY_VALIDATORS[self.__type](
             self.__constraint)
@@ -239,6 +254,17 @@ class PropertyDef:
             + (' comment="' + self.__comment + '"' if self.__comment else '') \
             + (' PK' if self.__pk else '') \
             + (' FK' if self.__fk else '')
+
+    @property
+    def type_def(self):
+        return self.__type_def
+
+    @property
+    def term_id(self):
+        return self.__term_id
+
+    def has_term_id(self):
+        return self.__term_id is not None
 
     @property
     def name(self):
@@ -268,6 +294,10 @@ class PropertyDef:
     def is_fk(self):
         return self.__fk
 
+    @property
+    def is_upk(self):
+        return self.__upk
+
     def validate(self, value):
         self.__property_validator.validate(self.__name, value)
 
@@ -280,6 +310,7 @@ class TypeDefService:
 
     def __init__(self, file_name):
         self.__type_defs = {}
+        self.__term_2_prop_defs = {}
         self.__load_type_defs(file_name)
 
     def __load_type_defs(self, file_name):
@@ -291,8 +322,44 @@ class TypeDefService:
         for type_def in self.__type_defs.values():
             type_def._update_process_input_type_defs(self.__type_defs)
 
+            # update __term_2_prop_defs
+            for prop_def in type_def.property_defs:
+                if prop_def.has_term_id():
+                    term_props = self.__term_2_prop_defs.get(prop_def.term_id)
+                    if term_props is None:
+                        term_props = []
+                        self.__term_2_prop_defs[prop_def.term_id] = term_props
+                    term_props.append(prop_def)
+
+        self.__type_defs[TYPE_NAME_BRICK] = None
+
     def get_type_names(self):
         return list(self.__type_defs.keys())
 
     def get_type_def(self, type_name):
         return self.__type_defs[type_name]
+
+    def has_term_pk(self, term_id):
+        prop_defs = self.__term_2_prop_defs.get(term_id)
+        if prop_defs is None:
+            return False
+
+        for prop_def in prop_defs:
+            if prop_def.is_pk:
+                return True
+
+        return False
+
+    def get_term_pk_prop_def(self, term_id):
+        prop_defs = self.__term_2_prop_defs.get(term_id)
+        if prop_defs is None:
+            return None
+
+        for prop_def in prop_defs:
+            if prop_def.is_pk:
+                return prop_def
+
+        return None
+
+    def get_term_prop_defs(self, term_id):
+        return self.__term_2_prop_defs.get(term_id)
