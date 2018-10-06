@@ -143,7 +143,16 @@ class OntologyService:
                         terms[term.term_id] = term
                         if root_term is None:
                             root_term = term
+                        term_id = None
                         state = STATE_NONE
+
+        if term_id is not None:
+            term = Term(term_id, term_name=term_name,
+                        ontology_id=ont_id,
+                        parent_ids=term_parent_ids)
+            terms[term.term_id] = term
+            if root_term is None:
+                root_term = term
 
         for _, term in terms.items():
             term._update_parents(terms)
@@ -216,6 +225,55 @@ class OntologyService:
     @property
     def all(self):
         return Ontology(self, 'all', ontologies_all=True)
+
+    def custom_list(self, list_name):
+        term_ids = set()
+        if list_name == 'ENIGMA_dims':
+            bp = services.brick_provider
+            bricks = bp.find({})
+            for brd in bricks.items:
+                for term_id in brd.dim_type_term_ids:
+                    term_ids.add(term_id)
+        elif list_name == 'ENIGMA_types':
+            bp = services.brick_provider
+            bricks = bp.find({})
+            for brd in bricks.items:
+                term_ids.add(brd.data_type_term_id)
+
+        elif list_name == 'ENIGMA_var_types':
+            bp = services.brick_provider
+            bricks = bp.find({})
+            for brd in bricks.items:
+                br = bp.load(brd.brick_id)
+                for dim in br.dims:
+                    for var in dim.vars:
+                        term_ids.add(var.type_term.term_id)
+                for data_var in br.data_vars:
+                    term_ids.add(data_var.type_term.term_id)
+
+        elif list_name == 'ENIGMA_units':
+            bp = services.brick_provider
+            bricks = bp.find({})
+            for brd in bricks.items:
+                br = bp.load(brd.brick_id)
+                for dim in br.dims:
+                    for var in dim.vars:
+                        if var.units_term is not None:
+                            term_ids.add(var.units_term.term_id)
+                for data_var in br.data_vars:
+                    if data_var.units_term is not None:
+                        term_ids.add(data_var.units_term.term_id)
+
+        terms = []
+        for term_id in term_ids:
+            try:
+                # term = Term(term_id, refresh=True)
+                term = services.term_provider.get_term(term_id)
+                terms.append(term)
+            except:
+                print('Can not find term: %s' % term_id)
+        terms.sort(key=lambda x: x.term_name)
+        return TermCollection(terms)
 
 
 class Ontology:
@@ -399,7 +457,7 @@ class TermCollection:
         return '%s <br> %s terms' % (table, len(self.terms))
 
 
-__TERM_PATTERN = re.compile('(.+)<(.+)>')
+_TERM_PATTERN = re.compile('(.+)<(.+)>')
 
 
 class Term:
@@ -408,7 +466,7 @@ class Term:
     '''
 
     def __init__(self, term_id, term_name=None, ontology_id=None,
-                 parent_ids=None, parent_path_ids=None, validator_name=None, persisted=False):
+                 parent_ids=None, parent_path_ids=None, validator_name=None, persisted=False, refresh=False):
         self.__persisted = persisted
         self.__term_id = term_id
         self.__term_name = term_name
@@ -417,23 +475,26 @@ class Term:
         self.__parent_path_ids = parent_path_ids
         self.__validator_name = validator_name
         self.__parent_terms = []
+        if refresh:
+            self.refresh()
 
     @staticmethod
     def check_term_format(value):
-        m = __TERM_PATTERN.findall(value)
+        m = _TERM_PATTERN.findall(value)
         return m is not None
 
     @staticmethod
     def parse_term(value):
-        m = __TERM_PATTERN.findall(value)
+        m = _TERM_PATTERN.findall(value)
         if m:
-            term = Term(m[0][1].strip(), term_name=m[0][0].strip())
+            # term = Term(m[0][1].strip(), term_name=m[0][0].strip())
+            term = services.term_provider.get_term(m[0][1].strip())
         else:
             raise ValueError('Can not parse term from value: %s' % value)
         return term
 
     def __str__(self):
-        return '%s [%s]' % (self.term_name, self.term_id)
+        return '%s <%s>' % (self.term_name, self.term_id)
 
     def _repr_html_(self):
         return '%s [%s] <pre>Ontology: %s</pre><pre>Parents: %s</pre>' \
@@ -457,6 +518,16 @@ class Term:
         self.__parent_path_ids = term.parent_path_ids
         self.__validator_name = term.validator_name
         self.__persisted = True
+
+    def __eq__(self, value):
+        if type(value) is Term:
+            return self.term_id == value.term_id
+
+        if type(value) is str:
+            value = value.strip()
+            return value == self.term_id or value.lower() == self.term_name.lower().strip()
+
+        return False
 
     @property
     def term_id(self):
@@ -528,3 +599,20 @@ class Term:
         for pid in self.__parent_ids:
             term = terms[pid]
             self.__parent_terms.append(term)
+
+
+class CashedTermProvider:
+    def __init__(self):
+        self.__id_2_term = {}
+
+    def get_term(self, term_id):
+        term = self.__id_2_term.get(term_id)
+        if term is None:
+            term = services.ontology.all.find_id(term_id)
+            if term is None:
+                raise ValueError(
+                    'Can not find a term with id: %s' % term_id)
+
+            self.__id_2_term[term_id] = term
+
+        return term

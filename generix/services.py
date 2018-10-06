@@ -4,16 +4,21 @@ from elasticsearch import Elasticsearch
 from neo4j.v1 import GraphDatabase
 from pymongo import MongoClient
 
-from .ontology import OntologyService
+from .ontology import OntologyService, CashedTermProvider
 from .validator import TermValueValidationService
 from .indexer import SearchIndexerService
 from .search import SearchService
-from .provenance import ProvenanceIndexerService, ProvenanceSearchService
 from .workspace import Workspace
 from .typedef import TypeDefService
 from .es_service import ElasticSearchService
 from .neo_service import Neo4JService
+from .dataprovider import Query, BrickProvider
+from .user_profile import UserProfile
 
+QQuery = Query
+
+
+IN_ONTOLOGY_LOAD_MODE = False
 
 __PACKAGE_DIR = os.path.dirname(os.path.dirname(__file__))
 __TYPEDEF_FILE = os.path.join(__PACKAGE_DIR, 'var/typedef.json')
@@ -44,8 +49,10 @@ es_indexer = SearchIndexerService(__es_client)
 es_search = SearchService(__es_client)
 es_service = ElasticSearchService(__es_client)
 
-neo_indexer = ProvenanceIndexerService()
-neo_search = ProvenanceSearchService(__neo4j_client)
 neo_service = Neo4JService(__neo4j_client)
 
 term_value_validator = TermValueValidationService()
+brick_provider = BrickProvider()
+
+user_profile = UserProfile()
+term_provider = CashedTermProvider()

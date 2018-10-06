@@ -1,6 +1,7 @@
 import pandas as pd
 from .brick import BrickDescriptor, BrickDescriptorCollection
 from . import services
+from .utils import to_es_type_name
 
 _ES_BRICK_INDEX_NAME = 'generix-data-brick'
 _ES_ENTITY_INDEX_NAME_PREFIX = 'generix-data-'
@@ -31,7 +32,7 @@ class SearchService:
         }
         return query
 
-    def _find_entities(self, entity_type, query, size=100):
+    def _find_entities(self, entity_type, query, size=10000):
         query['size'] = size
         entity_descriptors = []
         index_name = self._index_name(entity_type)
@@ -56,6 +57,8 @@ class SearchService:
 
         ids = []
         index_name = self._index_name(entity_type)
+
+        # print('Doing index name:' + index_name)
         result_set = self.__es_client.search(index=index_name, body=query)
 
         for hit in result_set['hits']['hits']:
@@ -79,23 +82,26 @@ class SearchService:
         ]
 
         brick_descriptors = []
-        result_set = self.__es_client.search(
-            index=_ES_BRICK_INDEX_NAME, body=query)
+        try:
+            result_set = self.__es_client.search(
+                index=_ES_BRICK_INDEX_NAME, body=query)
 
-        # print('entity_type:', 'brick')
-        # print('index_name:', _ES_BRICK_INDEX_NAME)
-        # print('Query:', query)
-        # print('result_set:', result_set)
+            # print('entity_type:', 'brick')
+            # print('index_name:', _ES_BRICK_INDEX_NAME)
+            # print('Query:', query)
+            # print('result_set:', result_set)
 
-        for hit in result_set['hits']['hits']:
-            data = hit["_source"]
-            bd = BrickDescriptor(data['brick_id'], data['name'], data['description'],
-                                 data['data_type_term_id'], data['data_type_term_name'],
-                                 data['n_dimensions'],
-                                 data['dim_type_term_ids'], data['dim_type_term_names'], data['dim_sizes'],
-                                 data['value_type_term_id'], data['value_type_term_name'])
+            for hit in result_set['hits']['hits']:
+                data = hit["_source"]
+                bd = BrickDescriptor(data['brick_id'], data['name'], data['description'],
+                                     data['data_type_term_id'], data['data_type_term_name'],
+                                     data['n_dimensions'],
+                                     data['dim_type_term_ids'], data['dim_type_term_names'], data['dim_sizes'],
+                                     data['value_type_term_id'], data['value_type_term_name'])
 
-            brick_descriptors.append(bd)
+                brick_descriptors.append(bd)
+        except:
+            print('Error: can not get bricks')
         return brick_descriptors
 
     def find_ids(self, brick_ids):
@@ -224,6 +230,7 @@ class SearchService:
         return pd.DataFrame(term_stats)[['Term Name', 'Term ID', 'Bricks count']]
 
     def _index_name(self, doc_type):
+        doc_type = to_es_type_name(doc_type)
         return _ES_BRICK_INDEX_NAME if doc_type == 'brick' else _ES_ENTITY_INDEX_NAME_PREFIX + doc_type
 
     # def get_entity_properties(self, type_name):
@@ -258,6 +265,9 @@ class EntityDescriptorCollection:
     @property
     def size(self):
         return len(self.__entity_descriptors)
+
+    def head(self, count=5):
+        return EntityDescriptorCollection(self.__entity_descriptors[:count])
 
     def __getitem__(self, i):
         return self.__entity_descriptors[i]

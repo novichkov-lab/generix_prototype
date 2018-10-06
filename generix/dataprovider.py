@@ -1,7 +1,7 @@
 import re
 from .ontology import Term
 from . import services
-from .brick import BrickDescriptorCollection
+from .brick import Brick, BrickDescriptorCollection
 from .search import EntityDescriptorCollection
 from .utils import to_var_name
 from .typedef import TYPE_NAME_BRICK, ES_TYPE_NAME_BRICK
@@ -11,14 +11,56 @@ from .utils import to_var_name
 class DataProvider:
     def __init__(self):
         self.__etities_provider = EntitiesProvider()
+        self.__generics_provider = GenericsProvider()
+        self.__reports = DataReports()
 
     @property
     def ontology(self):
         return services.ontology
 
     @property
-    def data(self):
+    def core_types(self):
         return self.__etities_provider
+
+    @property
+    def genx_types(self):
+        return self.__generics_provider
+
+    @property
+    def user_profile(self):
+        return services.user_profile
+
+    @property
+    def reports(self):
+        return self.__reports
+
+
+class DataReports:
+    def __init__(self):
+        pass
+
+    @property
+    def brick_types(self):
+        return services.es_search.data_type_terms()
+
+    @property
+    def brick_dim_types(self):
+        return services.es_search.dim_type_terms()
+
+    @property
+    def brick_data_var_types(self):
+        return services.es_search.value_type_terms()
+
+
+class GenericsProvider:
+    def __init__(self):
+        self.__load_providers()
+
+    def __load_providers(self):
+        type_names = services.es_service.get_type_names()
+        for type_name in type_names:
+            if type_name == ES_TYPE_NAME_BRICK:
+                self.__dict__[type_name] = BrickProvider()
 
 
 class EntitiesProvider:
@@ -28,8 +70,8 @@ class EntitiesProvider:
     def __load_entity_providers(self):
         type_names = services.es_service.get_type_names()
         for type_name in type_names:
-            self.__dict__[type_name] = BrickProvider() if type_name == ES_TYPE_NAME_BRICK \
-                else EntityProvider(type_name)
+            if type_name != ES_TYPE_NAME_BRICK:
+                self.__dict__[type_name] = EntityProvider(type_name)
 
 
 class EntityProvider:
@@ -66,11 +108,12 @@ class BrickProvider(EntityProvider):
         super().__init__(ES_TYPE_NAME_BRICK)
 
     def load(self, brick_id):
-        return services.workspace.get_brick(brick_id)
+        return Brick.read_dict(brick_id,  services.workspace.get_brick_data(brick_id))
 
 
 class Query:
     def __init__(self, type_name, properties):
+
         self.__type_name = type_name
         self.__es_filters = {}
         self.__neo_filters = []
@@ -104,7 +147,7 @@ class Query:
 
     def find_ids(self):
         es_query = services.es_search._build_query(self.__es_filters)
-        id_field_name = 'brick_id' if self.__type_name == 'brick' else 'entity_id'
+        id_field_name = 'brick_id' if self.__type_name == 'brick' else 'id'
         return services.es_search._find_entity_ids(self.__type_name, id_field_name, es_query)
 
     def find(self):
@@ -119,11 +162,11 @@ class Query:
             q.has(source_crierion)
             source_ids = q.find_ids()
 
-            source_type = 'Generic' if source_type == 'brick' else source_type[0:1].upper(
+            source_type = 'Brick' if source_type == 'brick' else source_type[0:1].upper(
             ) + source_type[1:]
 
             target_type = self.__type_name
-            target_type = 'Generic' if target_type == 'brick' else target_type[0:1].upper(
+            target_type = 'Brick' if target_type == 'brick' else target_type[0:1].upper(
             ) + target_type[1:]
 
             linked_ids = services.neo_search.find_linked_ids(
@@ -134,7 +177,7 @@ class Query:
 
         es_filter = {}
         if len(self.__neo_filters) > 0:
-            id_filed_name = 'brick_id' if self.__type_name == 'brick' else 'entity_id'
+            id_filed_name = 'brick_id' if self.__type_name == 'brick' else 'id'
             self._add_es_filter(es_filter, {id_filed_name: list(neo_ids)})
         for key in self.__es_filters:
             es_filter[key] = self.__es_filters[key]
@@ -159,82 +202,8 @@ class EntityProperties:
         self.__properties = services.es_service.get_entity_properties(
             self.__type_name)
         for prop in self.__properties:
-            # key = 'TERM_' + re.sub('[^A-Za-z0-9]+', '_', prop)
             key = to_var_name('TERM_', prop)
             self.__dict__[key] = prop
 
     def _repr_html_(self):
         self.__properties
-
-        # class EntityProperty:
-        #     def __init__(self, type_name, property_name):
-        #         self.__type_name = type_name
-        #         self.__property_name = property_name
-
-        #     def __eq__(self, value):
-        #         return PropertyCriterion(self.__type_name, self.__property_name, 'eq', value)
-
-        # class PropertyCriterion:
-        #     def __init__(self, type_name, property_name, operand, value):
-        #         self.__type_name = type_name
-        #         self.__property_name = property_name
-        #         self.__operand = operand
-        #         self.__value = value
-
-        #     def __str__(self):
-        #         return '%s.%s <%s> %s' % (self.__type_name, self.__property_name,
-        #                                   self.__operand, self.__value)
-
-        # class BrickFilter:
-        #     def __init__(self):
-        #         self.__es_filters = {}
-        #         self.__neo_filters = {}
-
-        #     def has_data_term_ids(self, data_type_term_ids):
-        #         self.__es_filters["term.data_type_term_id"] = data_type_term_ids
-        #         return self
-
-        #     def has_term_ids(self, term_ids):
-        #         self.__es_filters['terms.all_term_ids'] = term_ids
-        #         return self
-
-        #     def from_well(self, well_name):
-        #         self.__neo_filters['Well.name'] = well_name
-        #         return self
-
-        #     def go(self):
-        #         if len(self.__neo_filters) > 0:
-        #             brick_ids = services.neo_search.brick_ids_from_well(
-        #                 self.__neo_filters['Well.name'])
-        #             self.__es_filters['terms.brick_id'] = brick_ids
-
-        #         es_query = services.es_search._build_query(self.__es_filters)
-        #         return BrickDescriptorCollection(services.es_search._find_bricks(es_query))
-
-        # class DataType:
-        #     def __init__(self, term_id):
-        #         self.__term = Term(term_id)
-        #         self.__load_properties()
-
-        #     def __load_properties(self):
-        #         self.__dict__['id'] = 'id'
-        #         self.__dict__['name'] = 'name'
-        #         self.__dict__['date'] = 'date'
-
-        # class DataTypeProperty:
-        #     def __init__(self, property_name):
-        #         self.__property_name = property_name
-
-        #     @property
-        #     def name(self):
-        #         return self.__property_name
-
-        # class Criterion:
-        #     def __init__(self, parent):
-        #         self.__parent = parent
-
-        #     def connected_up(self, dtype=None, props=None):
-        #         return CriterionConnectedUp(self, dtype, props)
-
-        # class CriterionConnectedUp(Criterion):
-        #     def __init__(self, parent)

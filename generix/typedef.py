@@ -2,7 +2,7 @@ import re
 import json
 from .utils import to_es_type_name
 from .ontology import Term
-
+from . import services
 
 TYPE_NAME_PROCESS = 'Process'
 TYPE_NAME_BRICK = 'Brick'
@@ -119,6 +119,7 @@ _PROPERTY_VALIDATORS = {
     'text': PropertyTextValidator,
     'float': PropertyFloatValidator,
     'term': PropertyTermValidator,
+    'int': PropertyValidator,
     '[ref]': PropertyValidator,
     '[text]': PropertyValidator
 }
@@ -126,7 +127,10 @@ _PROPERTY_VALIDATORS = {
 
 class TypeDef:
     def __init__(self, name, type_def_doc):
+        # print('Doing type:', name)
+
         self.__name = name
+        self.__for_provenance = type_def_doc['used_for_provenance'] if 'used_for_provenance' in type_def_doc else False
         self.__property_defs = {}
         for pdoc in type_def_doc['fields']:
             self.__property_defs[pdoc['name']] = PropertyDef(self, pdoc)
@@ -152,7 +156,10 @@ class TypeDef:
         if 'process_types' in type_def_doc:
             for term_id in type_def_doc['process_types']:
                 term = Term(term_id)
-                term.refresh()
+
+                if not services.IN_ONTOLOGY_LOAD_MODE:
+                    term.refresh()
+
                 self.__process_type_terms.append(term)
 
         self.__process_input_type_names = []
@@ -198,6 +205,10 @@ class TypeDef:
     def fk_property_defs(self):
         return self.__fk_property_defs
 
+    @property
+    def for_provenance(self):
+        return self.__for_provenance
+
     def property_def(self, property_name):
         return self.__property_defs[property_name]
 
@@ -229,16 +240,18 @@ class TypeDef:
 
 class PropertyDef:
     def __init__(self, type_def, pdef_doc):
+
+        # print('Doing property:', pdef_doc['name'])
         self.__type_def = type_def
         self.__name = pdef_doc['name']
-        self.__type = pdef_doc['type']
+        self.__type = pdef_doc['scalar_type']
         self.__required = pdef_doc['required'] if 'required' in pdef_doc else False
         self.__constraint = pdef_doc.get('constraint')
         self.__comment = pdef_doc.get('comment')
         self.__pk = 'PK' in pdef_doc and pdef_doc['PK'] == True
         self.__fk = 'FK' in pdef_doc and pdef_doc['FK'] == True
         self.__upk = 'UPK' in pdef_doc and pdef_doc['UPK'] == True
-        self.__term_id = pdef_doc['term_id'] if 'term_id' in pdef_doc else False
+        self.__term_id = pdef_doc['type_term'] if 'type_term' in pdef_doc else False
 
         self.__property_validator = _PROPERTY_VALIDATORS[self.__type](
             self.__constraint)
