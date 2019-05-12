@@ -1,3 +1,4 @@
+import numpy as np
 import json
 from . import services
 from .typedef import TYPE_NAME_PROCESS, TYPE_NAME_BRICK
@@ -127,8 +128,7 @@ class Workspace:
         return Workspace.__ID_PATTERN % (type_name, id_offset)
 
     def get_brick_data(self, brick_id):
-        return self.__enigma_db.Brick.find_one({'brick_id': brick_id})
-        # return Brick.read_dict(brick_id, data)
+        return self.__enigma_db.Brick.find_one({'id': brick_id})
 
     def save_process(self, data_holder):
         self._generate_id(data_holder)
@@ -182,8 +182,12 @@ class Workspace:
             pass
 
     def _validate_process(self, data_holder):
-        pass
         # data_holder.type_def.validate_data(data_holder.data)
+
+        # Check for NaN
+        for key, value in data_holder.data.items():
+            if value != value:
+                data_holder.data[key] = None
 
     def _store_object(self, data_holder):
         type_name = data_holder.type_name

@@ -1,5 +1,4 @@
 import pandas as pd
-from .brick import BrickDescriptor, BrickDescriptorCollection
 from . import services
 from .utils import to_es_type_name
 
@@ -39,14 +38,10 @@ class SearchService:
         result_set = self.__es_client.search(
             index=index_name, body=query)
 
-        # print('entity_type:', entity_type)
-        # print('index_name:', index_name)
-        # print('Query:', query)
-        # print('result_set:', result_set)
-
         for hit in result_set['hits']['hits']:
             data = hit["_source"]
-            bd = EntityDescriptor(entity_type, data)
+            bd = ProcessDescriptor(
+                data) if entity_type == 'process' else EntityDescriptor(entity_type, data)
 
             entity_descriptors.append(bd)
         return entity_descriptors
@@ -65,10 +60,10 @@ class SearchService:
             ids.append(hit["_source"][id_field_name])
         return ids
 
-    def _find_bricks(self, query, size=100):
+    def _find_bricks(self, query, size=1000):
         query['size'] = size
         query['_source'] = [
-            'brick_id',
+            'id',
             'name',
             'description',
             'data_type_term_id',
@@ -80,6 +75,7 @@ class SearchService:
             'value_type_term_id',
             'value_type_term_name'
         ]
+        query['sort'] = ['data_type_term_name', 'id']
 
         brick_descriptors = []
         try:
@@ -93,12 +89,7 @@ class SearchService:
 
             for hit in result_set['hits']['hits']:
                 data = hit["_source"]
-                bd = BrickDescriptor(data['brick_id'], data['name'], data['description'],
-                                     data['data_type_term_id'], data['data_type_term_name'],
-                                     data['n_dimensions'],
-                                     data['dim_type_term_ids'], data['dim_type_term_names'], data['dim_sizes'],
-                                     data['value_type_term_id'], data['value_type_term_name'])
-
+                bd = BrickDescriptor(data)
                 brick_descriptors.append(bd)
         except:
             print('Error: can not get bricks')
@@ -108,11 +99,11 @@ class SearchService:
         query = {
             "query": {
                 "terms": {
-                    "brick_id": brick_ids
+                    "id": brick_ids
                 }
             }
         }
-        return BrickDescriptorCollection(self._find_bricks(query))
+        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
 
     def find_parent_term_ids(self, parent_term_ids):
         query = {
@@ -122,7 +113,7 @@ class SearchService:
                 }
             }
         }
-        return BrickDescriptorCollection(self._find_bricks(query))
+        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
 
     def find_parent_terms(self, parent_terms):
         term_ids = [t.term_id for t in parent_terms]
@@ -136,7 +127,7 @@ class SearchService:
                 }
             }
         }
-        return BrickDescriptorCollection(self._find_bricks(query))
+        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
 
     def find_data_type_terms(self, data_type_terms):
         term_ids = [t.term_id for t in data_type_terms]
@@ -150,7 +141,7 @@ class SearchService:
                 }
             }
         }
-        return BrickDescriptorCollection(self._find_bricks(query))
+        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
 
     def find_value_type_terms(self, value_type_terms):
         term_ids = [t.term_id for t in value_type_terms]
@@ -164,7 +155,7 @@ class SearchService:
                 }
             }
         }
-        return BrickDescriptorCollection(self._find_bricks(query))
+        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
 
     def find_dim_type_terms(self, dim_type_terms):
         term_ids = [t.term_id for t in dim_type_terms]
@@ -178,7 +169,7 @@ class SearchService:
                 }
             }
         }
-        return BrickDescriptorCollection(self._find_bricks(query))
+        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
 
     def find_terms(self, terms):
         term_ids = [t.term_id for t in terms]
@@ -193,7 +184,7 @@ class SearchService:
                 }
             }
         }
-        return BrickDescriptorCollection(self._find_bricks(query))
+        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
 
     def find_term_values(self, term, values):
         return self.find_term_id_values(term.term_id, values)
@@ -254,38 +245,48 @@ class SearchService:
         return self.__term_stat('value_type_term_id')
 
 
-class EntityDescriptorCollection:
-    def __init__(self, entity_descriptors):
-        self.__entity_descriptors = entity_descriptors
+class DataDescriptorCollection:
+    def __init__(self, data_descriptors=[]):
+        self.__data_descriptors = []
+        self.__data_descriptors.extend(data_descriptors)
 
     @property
     def items(self):
-        return self.__entity_descriptors
+        return self.__data_descriptors
 
     @property
     def size(self):
-        return len(self.__entity_descriptors)
+        return len(self.__data_descriptors)
+
+    def add_data_descriptor(self, dd):
+        self.__data_descriptors.append(dd)
+
+    def add_data_descriptors(self, dds):
+        self.__data_descriptors.extend(dds)
 
     def head(self, count=5):
-        return EntityDescriptorCollection(self.__entity_descriptors[:count])
+        return DataDescriptorCollection(data_descriptors=self.__data_descriptors[:count])
 
     def __getitem__(self, i):
-        return self.__entity_descriptors[i]
+        return self.__data_descriptors[i]
 
     def to_df(self):
-        ed_list = []
-        for ed in self.__entity_descriptors:
-            ed_doc = {}
-            for prop in ed.properties:
-                ed_doc[prop] = ed[prop]
-            ed_list.append(ed_doc)
-        return pd.DataFrame(ed_list)
+        dd_list = []
+        for dd in self.__data_descriptors:
+            dd_doc = {}
+            for prop in dd.table_view_properties():
+                dd_doc[prop] = dd[prop]
+            dd_list.append(dd_doc)
+        df = pd.DataFrame(dd_list)
+        if len(dd_list) > 0:
+            df = df[dd.table_view_properties()]
+        return df
 
     def _repr_html_(self):
         return self.to_df()._repr_html_()
 
 
-class EntityDescriptor:
+class DataDescriptor:
     def __init__(self, data_type, doc):
         self.__properties = []
 
@@ -297,6 +298,17 @@ class EntityDescriptor:
 
     def __getitem__(self, property):
         return self.__dict__[property]
+
+    def table_view_properties(self):
+        props = []
+        if 'id' in self.__dict__:
+            props.append('id')
+
+        for prop in self.__dict__.keys():
+            if prop.startswith('_') or prop == 'id' or prop == 'data_type':
+                continue
+            props.append(prop)
+        return props
 
     @property
     def properties(self):
@@ -321,3 +333,126 @@ class EntityDescriptor:
 
     def __str__(self):
         return self.__dict__
+
+
+class EntityDescriptor(DataDescriptor):
+    def __init__(self, data_type, doc):
+        super().__init__(data_type, doc)
+        self.__provenance = DataDescriptorProvenance(self)
+
+    def get_up_processes(self):
+        entity_id = self['id']
+        process_ids = services.neo_service.get_up_process_ids(entity_id)
+
+        pdc = None
+        if process_ids is None:
+            pdc = DataDescriptorCollection()
+        else:
+            q = services.Query('process', {})
+            q.has({'id': process_ids})
+            pdc = q.find()
+
+        return pdc
+
+    def get_down_processes(self):
+        entity_id = self['id']
+        process_ids = services.neo_service.get_down_process_ids(entity_id)
+
+        pdc = None
+        if process_ids is None:
+            pdc = DataDescriptorCollection()
+        else:
+            q = services.Query('process', {})
+            q.has({'id': process_ids})
+            pdc = q.find()
+
+        return pdc
+
+    def provenance(self):
+        return self.__provenance
+
+
+class DataDescriptorProvenance:
+    def __init__(self, data_descriptor):
+        self.__data_descriptor = data_descriptor
+
+    @staticmethod
+    def _provenance_rows(data_descriptor):
+        rows = []
+        for pd in data_descriptor.get_up_processes():
+            rows.append('<div style="margin-left:20px">')
+            rows.append('&uarr;')
+            rows.append('<div>')
+            rows.append('Created by: %s - %s: [%s, %s]' %
+                        (pd.id, pd.process_term_name,
+                         pd.campaign_term_name, pd.person_term_name))
+            rows.append('</div>')
+            for dd in pd.get_input_data_descriptors().items:
+                rows.append('<div>')
+                rows.append('From object: %s' % (dd.id))
+                rows.extend(DataDescriptorProvenance._provenance_rows(dd))
+                rows.append('</div>')
+            rows.append('</div>')
+
+        return rows
+
+    def _repr_html_(self):
+        prov_html = ''.join(
+            DataDescriptorProvenance._provenance_rows(self.__data_descriptor))
+        return 'Provenance for %s %s ' % (self.__data_descriptor.id, prov_html)
+
+
+class ProcessDescriptor(DataDescriptor):
+    def __init__(self, doc):
+        super().__init__('Process', doc)
+
+    def get_input_data_descriptors(self):
+        ddc = DataDescriptorCollection()
+
+        process_id = self['id']
+        entity_type_ids = services.neo_service.get_input_type_ids(process_id)
+        for etype in entity_type_ids:
+            q = services.Query(to_es_type_name(etype), {})
+            q.has({'id': entity_type_ids[etype]})
+            ddc.add_data_descriptors(q.find())
+
+        return ddc
+
+    def get_output_data_descriptors(self):
+        ddc = DataDescriptorCollection()
+
+        process_id = self['id']
+        entity_type_ids = services.neo_service.get_output_type_ids(process_id)
+
+        for etype in entity_type_ids:
+            q = services.Query(to_es_type_name(etype), {})
+            q.has({'id': entity_type_ids[etype]})
+            ddc.add_data_descriptors(q.find())
+
+        return ddc
+
+
+class BrickDescriptor(EntityDescriptor):
+    def __init__(self, data):
+        data['brick_id'] = data['id']
+        data['brick_name'] = data['name']
+        data['brick_type'] = data['data_type_term_name']
+        data['dim_types'] = data['dim_type_term_names']
+        data['value_type'] = data['value_type_term_name']
+        data['shape'] = data['dim_sizes']
+
+        super().__init__('Brick', data)
+
+    def table_view_properties(self):
+        return ['brick_id', 'brick_type', 'shape',
+                'dim_types', 'value_type', 'brick_name']
+
+    @property
+    def full_type(self):
+        return '%s<%s>' % (self['data_type_term_name'], ','.join(self['dim_type_term_names']))
+
+    def load(self):
+        return services.brick_provider.load(self['id'])
+
+    def __str__(self):
+        return 'Name: %s;  Type: %s; Shape: %s' % (self['name'], self.full_type, self['shape'])

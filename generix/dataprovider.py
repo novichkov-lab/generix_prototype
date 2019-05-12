@@ -1,11 +1,11 @@
 import re
 from .ontology import Term
 from . import services
-from .brick import Brick, BrickDescriptorCollection, BrickProvenance
-from .search import EntityDescriptorCollection
+from .brick import Brick, BrickProvenance
+from .search import DataDescriptorCollection
 from .utils import to_var_name
 from .typedef import TYPE_NAME_BRICK, ES_TYPE_NAME_BRICK
-from .utils import to_var_name
+from .utils import to_var_name, to_es_type_name
 
 
 class DataProvider:
@@ -33,6 +33,15 @@ class DataProvider:
     @property
     def reports(self):
         return self.__reports
+
+    def _get_type_provider(self, type_name):
+        provider = None
+        es_type_name = to_es_type_name(type_name)
+        if es_type_name == ES_TYPE_NAME_BRICK:
+            provider = BrickProvider()        
+        else:
+            provider = EntityProvider(es_type_name)
+        return provider
 
 
 class DataReports:
@@ -110,8 +119,8 @@ class BrickProvider(EntityProvider):
     def load(self, brick_id):
         brick = Brick.read_dict(
             brick_id,  services.workspace.get_brick_data(brick_id))
-        provenance = BrickProvenance('loaded', ['brick_id:%s' % brick.id])
-        brick.provenance.provenance_items.append(provenance)
+        provenance = BrickProvenance('loaded', ['id:%s' % brick.id])
+        brick.session_provenance.provenance_items.append(provenance)
         return brick
 
 
@@ -151,8 +160,9 @@ class Query:
 
     def find_ids(self):
         es_query = services.es_search._build_query(self.__es_filters)
-        id_field_name = 'brick_id' if self.__type_name == 'brick' else 'id'
-        return services.es_search._find_entity_ids(self.__type_name, id_field_name, es_query)
+        # id_field_name = 'brick_id' if self.__type_name == 'brick' else 'id'
+        # return services.es_search._find_entity_ids(self.__type_name, id_field_name, es_query)
+        return services.es_search._find_entity_ids(self.__type_name, 'id', es_query)
 
     def find(self):
         neo_ids = set()
@@ -181,19 +191,23 @@ class Query:
 
         es_filter = {}
         if len(self.__neo_filters) > 0:
-            id_filed_name = 'brick_id' if self.__type_name == 'brick' else 'id'
-            self._add_es_filter(es_filter, {id_filed_name: list(neo_ids)})
+            # id_filed_name = 'brick_id' if self.__type_name == 'brick' else 'id'
+            # self._add_es_filter(es_filter, {id_filed_name: list(neo_ids)})
+            self._add_es_filter(es_filter, {'id': list(neo_ids)})
         for key in self.__es_filters:
             es_filter[key] = self.__es_filters[key]
 
         es_query = services.es_search._build_query(es_filter)
         if self.__type_name == 'brick':
-            return BrickDescriptorCollection(services.es_search._find_bricks(es_query))
+            return DataDescriptorCollection(data_descriptors=services.es_search._find_bricks(es_query))
         else:
-            return EntityDescriptorCollection(services.es_search._find_entities(self.__type_name, es_query))
+            return DataDescriptorCollection(data_descriptors=services.es_search._find_entities(self.__type_name, es_query))
 
     def find_one(self):
-        pass
+        ddc = self.find()
+        if ddc.size > 0:
+            return ddc[0]
+        return None
 
 
 class EntityProperties:

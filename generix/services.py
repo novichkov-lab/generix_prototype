@@ -6,22 +6,23 @@ from pymongo import MongoClient
 
 from .ontology import OntologyService, CashedTermProvider
 from .validator import TermValueValidationService
-from .indexer import SearchIndexerService
 from .search import SearchService
 from .workspace import Workspace
 from .typedef import TypeDefService
 from .es_service import ElasticSearchService
 from .neo_service import Neo4JService
-from .dataprovider import Query, BrickProvider
 from .user_profile import UserProfile
+from .dataprovider import BrickProvider
+from .dataprovider import Query as _Query
 
-QQuery = Query
-
+Query = _Query
 
 IN_ONTOLOGY_LOAD_MODE = False
 
 __PACKAGE_DIR = os.path.dirname(os.path.dirname(__file__))
 __TYPEDEF_FILE = os.path.join(__PACKAGE_DIR, 'var/typedef.json')
+
+_BRICK_TYPE_TEMPLATES_FILE = os.path.join(__PACKAGE_DIR, 'var/brick_type_templates.json')
 
 __CONFIG_FILE = os.path.join(__PACKAGE_DIR, 'var/config.json')
 __CONFIG = json.loads(open(__CONFIG_FILE).read())
@@ -45,7 +46,6 @@ ontology = OntologyService(__es_client)
 typedef = TypeDefService(__TYPEDEF_FILE)
 workspace = Workspace(__mongo_client)
 
-es_indexer = SearchIndexerService(__es_client)
 es_search = SearchService(__es_client)
 es_service = ElasticSearchService(__es_client)
 
