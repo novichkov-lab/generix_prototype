@@ -1,13 +1,17 @@
 import re
 import json
-import numpy as np
-from .utils import to_es_type_name
 from .ontology import Term
-from . import services
+
+# TODO
+# from . import services
+
+TYPE_CATEGORY_STATIC   = 'SDT_'
+TYPE_CATEGORY_DYNAMIC  = 'DDT_'
+TYPE_CATEGORY_SYSTEM   = 'SYS_'
+TYPE_CATEGORY_ONTOLOGY = 'ONT_'
 
 TYPE_NAME_PROCESS = 'Process'
 TYPE_NAME_BRICK = 'Brick'
-ES_TYPE_NAME_BRICK = to_es_type_name(TYPE_NAME_BRICK)
 
 
 class PropertyValidator:
@@ -127,10 +131,11 @@ _PROPERTY_VALIDATORS = {
 
 
 class TypeDef:
-    def __init__(self, name, type_def_doc):
+    def __init__(self, type_name, category_name, type_def_doc):
         # print('Doing type:', name)
 
-        self.__name = name
+        self.__name = type_name
+        self.__category = category_name
         self.__for_provenance = type_def_doc['used_for_provenance'] if 'used_for_provenance' in type_def_doc else False
         self.__property_defs = {}
         for pdoc in type_def_doc['fields']:
@@ -158,15 +163,17 @@ class TypeDef:
             for term_id in type_def_doc['process_types']:
                 term = Term(term_id)
 
-                if not services.IN_ONTOLOGY_LOAD_MODE:
-                    term.refresh()
+                # TODO
+                # if not services.IN_ONTOLOGY_LOAD_MODE:
+                #     term.refresh()
 
                 self.__process_type_terms.append(term)
 
         self.__process_input_type_names = []
-        if 'process_inputs' in type_def_doc:
-            for type_name in type_def_doc['process_inputs']:
-                self.__process_input_type_names.append(type_name)
+        # TODO: process_inputs should be an array of arrays
+        # if 'process_inputs' in type_def_doc:
+        #     for type_name in type_def_doc['process_inputs']:
+        #         self.__process_input_type_names.append(type_name)
 
         self.__process_input_type_defs = []
 
@@ -177,15 +184,21 @@ class TypeDef:
         return '<br>'.join(rows)
 
     def _update_process_input_type_defs(self, all_type_defs):
-        pass
-        # TODO
-        # for type_name in self.__process_input_type_names:
-        #     self.__process_input_type_defs.append(all_type_defs[type_name])
+        for type_name in self.__process_input_type_names:
+            self.__process_input_type_defs.append(all_type_defs[type_name])
 
     @property
     def name(self):
         return self.__name
 
+    @property
+    def category(self):
+        return self.__category
+
+    @property
+    def collection_name(self):
+        return self.__category + self.__name
+        
     @property
     def property_names(self):
         return list(self.__property_defs.keys())
@@ -341,8 +354,18 @@ class TypeDefService:
     def __load_type_defs(self, file_name):
         with open(file_name, 'r') as f:
             doc = json.loads(f.read())
-        for type_name, type_def_doc in doc.items():
-            self.__type_defs[type_name] = TypeDef(type_name, type_def_doc)
+
+        # Do static types
+        for type_def_doc in doc['static_types']:
+            type_name = type_def_doc['name']
+            category_name = TYPE_CATEGORY_STATIC
+            self.__type_defs[type_name] = TypeDef(type_name, category_name, type_def_doc)
+
+        # Do system types
+        for type_def_doc in doc['system_types']:
+            type_name = type_def_doc['name']
+            category_name = TYPE_CATEGORY_SYSTEM
+            self.__type_defs[type_name] = TypeDef(type_name, category_name, type_def_doc)
 
         for type_def in self.__type_defs.values():
             type_def._update_process_input_type_defs(self.__type_defs)
@@ -356,10 +379,17 @@ class TypeDefService:
                         self.__term_2_prop_defs[prop_def.term_id] = term_props
                     term_props.append(prop_def)
 
-        self.__type_defs[TYPE_NAME_BRICK] = None
+        # self.__type_defs[TYPE_NAME_BRICK] = None
 
-    def get_type_names(self):
-        return list(self.__type_defs.keys())
+    def get_type_names(self, category=None):
+        names = []
+        for name, type_def in self.__type_defs.items():
+            if category is None:
+                names.append(name)
+            else:
+                if type_def is not None and type_def.category == category:
+                    names.append(name)
+        return names
 
     def get_type_def(self, type_name):
         return self.__type_defs[type_name]

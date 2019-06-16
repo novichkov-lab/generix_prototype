@@ -7,9 +7,10 @@ import datetime
 from time import gmtime, strftime
 from .ontology import Term
 from .workspace import BrickDataHolder, ProcessDataHolder
+from .typedef import TYPE_NAME_BRICK
+from .query import Query
 from . import services
 from .utils import to_var_name, to_es_type_name
-
 
 class NPEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -527,8 +528,8 @@ class Brick:
         return self.__session_provenance
     
     @property
-    def descriptor(self):
-        q = services.Query('brick',{})
+    def descriptor(self):        
+        q = Query(services.indexdef.get_type_def(TYPE_NAME_BRICK))
         q.has({'id': self.id})
         return q.find_one()
 
@@ -980,7 +981,7 @@ class Brick:
             'date_start': datetime.datetime.today().strftime('%Y-%m-%d'),
             'date_end': datetime.datetime.today().strftime('%Y-%m-%d'),
             'input_objects': input_obj_ids,
-            'output_objects': '%s:%s' % ( 'Brick', brick_data_holder.id) 
+            'output_objects': ['%s:%s' % ( TYPE_NAME_BRICK, brick_data_holder.id)]
         }
         services.workspace.save_process(ProcessDataHolder(process_data)) 
 
@@ -1123,9 +1124,8 @@ class BrickDimension:
             if val is not None:
                 values.append(val)
 
-        type_name = to_es_type_name(core_type)
-        q = services.Query(type_name ,{})
-        q.has({pk_def.name:values})
+        q = Query(services.indexdef.get_type_def(core_type))
+        q.has({pk_def.name:{'in':values}})
         rs = q.find()
 
         # build data
@@ -1175,9 +1175,8 @@ class BrickDimension:
 
         type_def = services.typedef.get_type_def(core_type)
         pk_prop_name =  type_def.pk_property_def.name
-        type_name = to_es_type_name(core_type)
-        q = services.Query(type_name ,{})
-        q.has({core_prop_name:  list(values)})
+        q = Query(services.indexdef.get_type_def(core_type))
+        q.has({core_prop_name: {'in': list(values)} })
         rs = q.find()
 
         # build data
@@ -1419,43 +1418,6 @@ class BrickVariable:
         
         return '<table>%s</table>' % ''.join(rows) 
 
-class BrickIndexDocumnet:
-    def __init__(self, brick):
-        self.id = brick.id
-        self.name = brick.name
-        self.description = brick.description
-        self.n_dimensions = len(brick.dims)
-        self.data_type_term_id = brick.type_term.term_id
-        self.data_type_term_name = brick.type_term.term_name
-
-        data_var = brick.data_vars[0]
-        self.value_type_term_id = data_var.type_term.term_id
-        self.value_type_term_name = data_var.type_term.term_name
-
-        self.dim_type_term_ids = [
-            d.type_term.term_id for d in brick.dims]
-        self.dim_type_term_names = [
-            d.type_term.term_name for d in brick.dims]
-        self.dim_sizes = [d.size for d in brick.dims]
-
-        # TODO: all term ids and values
-        self.all_term_ids = list(brick._get_all_term_ids())
-        self.all_term_values = list(brick._get_all_term_values())
-
-        # parent path term ids
-        all_parent_path_term_ids = set()
-        ont_all = services.ontology.all
-        term_collection = ont_all.find_ids(self.all_term_ids)
-        for term in term_collection.terms:
-            for term_id in term.parent_path_ids:
-                all_parent_path_term_ids.add(term_id)
-        self.all_parent_path_term_ids = list(all_parent_path_term_ids)
-
-        # values per ontology term
-        term_id_2_values = brick._get_term_id_2_values()
-        for term_id, values in term_id_2_values.items():
-            prop = 'ont_' + '_'.join(term_id.split(':'))
-            self.__dict__[prop] = list(values)
 
 
 class BrickProvenance:

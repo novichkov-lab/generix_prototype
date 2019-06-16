@@ -1,75 +1,39 @@
-import re
-from .ontology import Term
 from . import services
-from .brick import Brick, BrickProvenance
-from .search import DataDescriptorCollection
+from .typedef import TYPE_NAME_BRICK, TYPE_CATEGORY_DYNAMIC, TYPE_CATEGORY_STATIC
 from .utils import to_var_name
-from .typedef import TYPE_NAME_BRICK, ES_TYPE_NAME_BRICK
-from .utils import to_var_name, to_es_type_name
-
+from .brick import Brick, BrickProvenance
+from .query import Query
+from .user_profile import UserProfile
 
 class DataProvider:
-    def __init__(self):
-        self.__etities_provider = EntitiesProvider()
-        self.__generics_provider = GenericsProvider()
-        self.__reports = DataReports()
+    def __init__(self, user_name='psnovichkov'):
+        self.__user_name = user_name
 
-    @property
-    def ontology(self):
-        return services.ontology
-
-    @property
-    def core_types(self):
-        return self.__etities_provider
-
-    @property
-    def genx_types(self):
-        return self.__generics_provider
-
-    @property
-    def user_profile(self):
-        return services.user_profile
-
-    @property
-    def reports(self):
-        return self.__reports
+        self.__dict__['ontology'] = services.ontology
+        self.__dict__['core_types'] = EntitiesProvider()
+        self.__dict__['genx_types'] = GenericsProvider()
+        self.__dict__['reports'] = services.reports
+        self.__dict__['user_profile'] = UserProfile(self.__user_name)
 
     def _get_type_provider(self, type_name):
-        provider = None
-        es_type_name = to_es_type_name(type_name)
-        if es_type_name == ES_TYPE_NAME_BRICK:
+
+        type_def = services.indexdef.get_type_def(type_name)
+        provider = None        
+        if type_name == TYPE_NAME_BRICK:
             provider = BrickProvider()        
         else:
-            provider = EntityProvider(es_type_name)
+            provider = EntityProvider(type_def)
         return provider
-
-
-class DataReports:
-    def __init__(self):
-        pass
-
-    @property
-    def brick_types(self):
-        return services.es_search.data_type_terms()
-
-    @property
-    def brick_dim_types(self):
-        return services.es_search.dim_type_terms()
-
-    @property
-    def brick_data_var_types(self):
-        return services.es_search.value_type_terms()
-
 
 class GenericsProvider:
     def __init__(self):
         self.__load_providers()
 
     def __load_providers(self):
-        type_names = services.es_service.get_type_names()
-        for type_name in type_names:
-            if type_name == ES_TYPE_NAME_BRICK:
-                self.__dict__[type_name] = BrickProvider()
+        index_type_defs = services.indexdef.get_type_defs(category=TYPE_CATEGORY_DYNAMIC)
+        for index_type_def in index_type_defs:
+            if index_type_def.name == TYPE_NAME_BRICK:
+                self.__dict__[TYPE_NAME_BRICK] = BrickProvider()
 
 
 class EntitiesProvider:
@@ -77,151 +41,46 @@ class EntitiesProvider:
         self.__load_entity_providers()
 
     def __load_entity_providers(self):
-        type_names = services.es_service.get_type_names()
-        for type_name in type_names:
-            if type_name != ES_TYPE_NAME_BRICK:
-                self.__dict__[type_name] = EntityProvider(type_name)
+        index_type_defs = services.indexdef.get_type_defs(category=TYPE_CATEGORY_STATIC)
+        for index_type_def in index_type_defs:
+            self.__dict__[index_type_def.name] = EntityProvider(index_type_def)
 
 
 class EntityProvider:
-    def __init__(self, type_name):
-        self.__type_name = type_name
-        self.__properties = self.__get_properties()
-        self.__inflate_properties(self.__properties)
+    def __init__(self, index_type_def):
+        self.__index_type_def = index_type_def
+        self.__inflate_properties()
 
-    def __get_properties(self):
-        properties = {}
-        props = services.es_service.get_entity_properties(
-            self.__type_name)
-        for prop in props:
-            key = to_var_name('PROPERTY_', prop)
-            properties[key] = prop
-        return properties
+    def __inflate_properties(self):
+        for index_prop_def in self.__index_type_def.property_defs:
+            key = to_var_name('PROPERTY_', index_prop_def.name)
+            self.__dict__[key] = index_prop_def
 
-    def __inflate_properties(self, properties):
-        for key in properties:
-            self.__dict__[key] = properties[key]
+    def find(self, criterion=None):
+        q = self.query()
+        q.has(criterion)
+        return q.find()
 
-    def find(self, criterion):
-        return self.query().has(criterion).find()
-
-    def find_one(self, criterion):
-        return self.query().has(criterion).find_one()
+    def find_one(self, criterion=None):
+        q = self.query()
+        q.has(criterion)
+        return q.find_one()
 
     def query(self):
-        return Query(self.__type_name, self.__properties)
+        return Query(self.__index_type_def)
 
 
 class BrickProvider(EntityProvider):
     def __init__(self):
-        super().__init__(ES_TYPE_NAME_BRICK)
+        super().__init__(services.indexdef.get_type_def(TYPE_NAME_BRICK) )
 
-    def load(self, brick_id):
+    @staticmethod
+    def _load_brick(brick_id):
         brick = Brick.read_dict(
             brick_id,  services.workspace.get_brick_data(brick_id))
         provenance = BrickProvenance('loaded', ['id:%s' % brick.id])
         brick.session_provenance.provenance_items.append(provenance)
         return brick
 
-
-class Query:
-    def __init__(self, type_name, properties):
-
-        self.__type_name = type_name
-        self.__es_filters = {}
-        self.__neo_filters = []
-        for key in properties:
-            self.__dict__[key] = properties[key]
-
-    def _add_es_filter(self, es_filters, criterion):
-        if type(criterion) is dict:
-            for key in criterion:
-                if type(criterion[key]) is list:
-                    prefix = 'terms'
-                else:
-                    prefix = 'term'
-                es_filters[prefix + '.' + key] = criterion[key]
-        else:
-            print('Error: Criterion should be a dict')
-
-    def has(self, criterion):
-        self._add_es_filter(self.__es_filters, criterion)
-        return self
-
-    def linked_up_to(self, type_name, criterion):
-        self.__neo_filters.append(
-            {'dtype': type_name, 'criterion': criterion, 'direct': True})
-        return self
-
-    def linked_down_to(self, type_name, criterion):
-        self.__neo_filters.append(
-            {'dtype': type_name, 'criterion': criterion, 'direct': False})
-        return self
-
-    def find_ids(self):
-        es_query = services.es_search._build_query(self.__es_filters)
-        # id_field_name = 'brick_id' if self.__type_name == 'brick' else 'id'
-        # return services.es_search._find_entity_ids(self.__type_name, id_field_name, es_query)
-        return services.es_search._find_entity_ids(self.__type_name, 'id', es_query)
-
-    def find(self):
-        neo_ids = set()
-
-        # collect ids based on links
-        for neo_filter in self.__neo_filters:
-            source_type = neo_filter['dtype']
-            source_crierion = neo_filter['criterion']
-            direct = neo_filter['direct']
-            q = Query(source_type, {})
-            q.has(source_crierion)
-            source_ids = q.find_ids()
-
-            source_type = 'Brick' if source_type == 'brick' else source_type[0:1].upper(
-            ) + source_type[1:]
-
-            target_type = self.__type_name
-            target_type = 'Brick' if target_type == 'brick' else target_type[0:1].upper(
-            ) + target_type[1:]
-
-            linked_ids = services.neo_service.find_linked_ids(
-                source_type, 'id', source_ids, target_type, 'id', direct=direct)
-
-            for linked_id in linked_ids:
-                neo_ids.add(linked_id)
-
-        es_filter = {}
-        if len(self.__neo_filters) > 0:
-            # id_filed_name = 'brick_id' if self.__type_name == 'brick' else 'id'
-            # self._add_es_filter(es_filter, {id_filed_name: list(neo_ids)})
-            self._add_es_filter(es_filter, {'id': list(neo_ids)})
-        for key in self.__es_filters:
-            es_filter[key] = self.__es_filters[key]
-
-        es_query = services.es_search._build_query(es_filter)
-        if self.__type_name == 'brick':
-            return DataDescriptorCollection(data_descriptors=services.es_search._find_bricks(es_query))
-        else:
-            return DataDescriptorCollection(data_descriptors=services.es_search._find_entities(self.__type_name, es_query))
-
-    def find_one(self):
-        ddc = self.find()
-        if ddc.size > 0:
-            return ddc[0]
-        return None
-
-
-class EntityProperties:
-    def __init__(self, type_name):
-        self.__type_name = type_name
-        self.__properties = []
-        self.__inflate_properties()
-
-    def __inflate_properties(self):
-        self.__properties = services.es_service.get_entity_properties(
-            self.__type_name)
-        for prop in self.__properties:
-            key = to_var_name('TERM_', prop)
-            self.__dict__[key] = prop
-
-    def _repr_html_(self):
-        self.__properties
+    def load(self, brick_id):
+        return BrickProvider._load_brick(brick_id)
