@@ -7,23 +7,38 @@ from . import services
 
 
 OTERM_TYPE = 'OTerm'
-ONTOLOGY_COLLECTION_NAME_PREFIX = 'generix-ont-'
+TYPE_CATEGORY_ONTOLOGY = ''
+OTERM_COLLECTION_NAME = TYPE_CATEGORY_ONTOLOGY + OTERM_TYPE
 
-CUSTOM_LIST_ENIGMA_DIMS = 'ENIGMA_dims'
-CUSTOM_LIST_ENIGMA_TYPES = 'ENIGMA_types'
-CUSTOM_LIST_ENIGMA_VAR_TYPES = 'ENIGMA_var_types'
-CUSTOM_LIST_ENIGMA_UNITS = 'ENIGMA_units'
+ONTOLOGY_COLLECTION_NAME_PREFIX = 'generix-ont-'
 
 class OntologyService:
     def __init__(self, arango_service):
         self.__arango_service = arango_service
 
+    def _ensure_ontology_ready(self):
+        try:
+            services.arango_service.create_collection(OTERM_COLLECTION_NAME)
+        except:
+            print('Ontology collection is present already')
+        
+        # build indices
+        print('Ensure ontoloy indices')
+        collection = services.arango_service.db[OTERM_COLLECTION_NAME]
+        collection.ensureFulltextIndex(['term_name'],minLength=3)
+        collection.ensureHashIndex(['term_id'], unique=True)
+        collection.ensureHashIndex(['ontology'])
+
+
     def _upload_ontologies(self, config_fname):
+        self._ensure_ontology_ready()
         with open(config_fname, 'r') as f:
             doc = json.loads(f.read())
             for ont in doc['ontologies']:
                 print('Doing ontology: ' + ont['name'])
-                self._upload_ontology(doc['source_dir'], ont)
+                if 'ignore' in ont and ont['ignore']:
+                    continue
+                self._upload_ontology(services._IMPORT_DIR_ONTOLOGY, ont)
  
     def _upload_ontology(self, dir_name, ont):
         self._clean_ontology(ont['name'])
@@ -39,11 +54,13 @@ class OntologyService:
                 'ontology_id': ont_id,
                 'term_id': term.term_id,
                 'term_name': term.term_name,
-                'term_name_prefix': term.term_name,
                 'parent_term_ids': term.parent_ids,
                 'parent_path_term_ids': list(all_parent_ids.keys())
             }
-            self.__arango_service.index_doc(doc, OTERM_TYPE)
+            try:
+                self.__arango_service.index_doc(doc, OTERM_TYPE, TYPE_CATEGORY_ONTOLOGY)
+            except:
+                print('ERROR: can not index term: %s - %s' % (doc['term_id'],doc['term_name']) )
 
 
     def _collect_all_parent_ids(self, term, all_parent_ids):
@@ -63,11 +80,13 @@ class OntologyService:
 
         term_id = None
         term_name = None
+
+        # TODO: index term_aliases as well
         term_aliases = []
         term_parent_ids = []
 
         root_term = None
-        with open(dir_name + file_name, 'r') as f:
+        with open( os.path.join(dir_name, file_name) , 'r') as f:
             for line in f:
                 line = line.strip()
                 if state == STATE_NONE:
@@ -113,60 +132,6 @@ class OntologyService:
     def _clean_ontology(self, ont_name):
         pass
 
-    # def _drop_index(self, index_name):
-    #     try:
-    #         self.__es_client.indices.delete(index=index_name)
-    #     except:
-    #         pass
-
-    # def _create_index(self, index_name):
-    #     settings = {
-    #         "settings": {
-    #             "analysis": {
-    #                 "analyzer": {
-    #                     "keyword": {
-    #                         "type": "custom",
-    #                         "tokenizer": "keyword"
-    #                     }
-    #                 }
-    #             }
-    #         },
-    #         "mappings": {
-    #             _ES_OTERM_TYPE: {
-    #                 "properties": {
-    #                     "term_id": {
-    #                         "type": "text",
-    #                         "analyzer": "keyword"
-    #                     },
-    #                     "parent_term_ids": {
-    #                         "type": "text",
-    #                         "analyzer": "keyword"
-    #                     },
-    #                     "parent_path_term_ids": {
-    #                         "type": "text",
-    #                         "analyzer": "keyword"
-    #                     },
-    #                     "term_name": {
-    #                         "type": "text",
-    #                         "analyzer": "keyword"
-    #                     },
-    #                     "term_name_prefix": {
-    #                         "type": "text",
-    #                         "analyzer": "standard"
-    #                     }
-    #                 }
-    #             }
-    #         }
-    #     }
-
-    #     self.__es_client.indices.create(index=index_name, body=settings)
-
-
-    # def __find(self, aql_filter, aql_bind):
-    #     aql = 'FOR x IN %s FILTER %s RETURN x' % (OTERM_TYPE, aql_filter )
-    #     return self.__arango_service.find(aql, aql_bind)
-
-
     @property
     def units(self):
         return Ontology(self.__arango_service, 'units')
@@ -183,17 +148,17 @@ class OntologyService:
     def all(self):
         return Ontology(self.__arango_service, 'all', ontologies_all=True)
 
-    def term_stat(self, index_type_def, term_id_prop_name):
-        index_prop_def = index_type_def.get_property_def(term_id_prop_name)
+    def term_stat(self, index_type_def, term_prop_name):
+        index_prop_def = index_type_def.get_property_def(term_prop_name)
 
         aql_collect = ''
         if index_prop_def.scalar_type.startswith('['):
             aql_collect = '''
                 FOR terms IN x.%s
                 COLLECT term_id = terms 
-            ''' % index_prop_def.name
+            ''' % (index_prop_def.name[:-1] + '_term_ids')
         else:
-            aql_collect = 'COLLECT term_id = x.%s ' % index_prop_def.name
+            aql_collect = 'COLLECT term_id = x.%s ' % (index_prop_def.name + '_term_id')
 
         aql = '''
             FOR x IN @@collection
@@ -210,57 +175,6 @@ class OntologyService:
         term_ids_hash = services.ontology.all.find_ids_hash(term_ids)
         return [  ( term_ids_hash.get(row['term_id']), row['term_count'] ) 
             for row in rs  ]    
-
-
-    # def custom_list(self, list_name):
-    #     term_ids = set()
-    #     if list_name == CUSTOM_LIST_ENIGMA_DIMS:
-    #         bp = services.brick_provider
-    #         bricks = bp.find({})
-    #         for brd in bricks.items:
-    #             for term_id in brd.dim_type_term_ids:
-    #                 term_ids.add(term_id)                    
-    #     elif list_name == CUSTOM_LIST_ENIGMA_TYPES:
-    #         bp = services.brick_provider
-    #         bricks = bp.find({})
-    #         for brd in bricks.items:
-    #             term_ids.add(brd.data_type_term_id)
-
-    #     elif list_name == CUSTOM_LIST_ENIGMA_VAR_TYPES:
-    #         bp = services.brick_provider
-    #         bricks = bp.find({})
-    #         for brd in bricks.items:
-    #             br = bp.load(brd.id)
-    #             for dim in br.dims:
-    #                 for var in dim.vars:
-    #                     term_ids.add(var.type_term.term_id)
-    #             for data_var in br.data_vars:
-    #                 term_ids.add(data_var.type_term.term_id)
-
-    #     elif list_name == CUSTOM_LIST_ENIGMA_UNITS:
-    #         bp = services.brick_provider
-    #         bricks = bp.find({})
-    #         for brd in bricks.items:
-    #             br = bp.load(brd.id)
-    #             for dim in br.dims:
-    #                 for var in dim.vars:
-    #                     if var.units_term is not None:
-    #                         term_ids.add(var.units_term.term_id)
-    #             for data_var in br.data_vars:
-    #                 if data_var.units_term is not None:
-    #                     term_ids.add(data_var.units_term.term_id)
-
-    #     terms = []
-    #     for term_id in term_ids:
-    #         try:
-    #             # term = Term(term_id, refresh=True)
-    #             term = services.term_provider.get_term(term_id)
-    #             terms.append(term)
-    #         except:
-    #             print('Can not find term: %s' % term_id)
-    #     terms.sort(key=lambda x: x.term_name)
-    #     return TermCollection(terms)
-
 
 class Ontology:
     def __init__(self, arango_service, ontology_id, ontologies_all=False):        
@@ -292,7 +206,7 @@ class Ontology:
             aql_bind['ontology_id'] = self.__ontology_id
 
         if aql_fulltext is None:
-            aql = 'FOR x IN %s FILTER %s RETURN x' % (OTERM_TYPE, aql_filter )
+            aql = 'FOR x IN %s FILTER %s RETURN x' % (OTERM_COLLECTION_NAME, aql_filter )
         else:
             aql = 'FOR x IN %s FILTER %s RETURN x' % (aql_fulltext, aql_filter )
 
@@ -344,8 +258,8 @@ class Ontology:
         aql_filter = 'x.term_name == @term_name'
         return self.__find_term(aql_filter, aql_bind)
 
-    def find_name_pattern(self, term_name_prefix, size=100):
-        aql_bind = {'@collection': 'OTerm', 'property_name': 'term_name_prefix', 'property_value': term_name_prefix}
+    def find_name_pattern(self, value, size=100):
+        aql_bind = {'@collection': 'OTerm', 'property_name': 'term_name', 'property_value': value}
         aql_filter = ''
         aql_fulltext = 'FULLTEXT(@@collection, @property_name, @property_value)'
         return TermCollection(self.__find_terms(aql_filter, aql_bind, 
@@ -455,6 +369,19 @@ class Term:
         self.__parent_terms = []
         if refresh:
             self.refresh()
+
+    '''
+        term_id_names is an array. The elements of this array can be one of:
+        . instance of Term
+        . term_id in the format QQQ:1234234
+        . exact term name
+    '''
+    @staticmethod
+    def get_terms(term_id_names):
+        terms = []
+        for term_id_name in term_id_names:
+            terms.append( Term.get_term(term_id_name) )
+        return terms
 
     '''
         term_id_name can be one of:

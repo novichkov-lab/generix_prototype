@@ -1,5 +1,6 @@
 import pandas as pd 
 from .ontology import Term
+from .typedef import TYPE_NAME_BRICK
 from . import dataprovider
 from . import services
 
@@ -69,6 +70,10 @@ class DataDescriptor:
         return props
 
     @property
+    def index_type_def(self):
+        return self.__index_type_def
+
+    @property
     def properties(self):
         return self.__properties
 
@@ -97,36 +102,23 @@ class EntityDescriptor(DataDescriptor):
         super().__init__(index_type_def, doc)
         self.__provenance = DataDescriptorProvenance(self)
 
-    def get_up_processes(self):
-        pass
-        # TODO
-        # entity_id = self['id']
-        # process_ids = services.neo_service.get_up_process_ids(entity_id)
+    def get_up_process(self):
+        entity_id = self['id']
+        docs = services.arango_service.get_up_processes(self.index_type_def, entity_id)
 
-        # pdc = None
-        # if process_ids is None:
-        #     pdc = DataDescriptorCollection()
-        # else:
-        #     q = services.Query('process', {})
-        #     q.has({'id': process_ids})
-        #     pdc = q.find()
-
-        # return pdc
+        dds = []
+        for doc in docs:
+            dds.append( ProcessDescriptor(doc) )
+        return DataDescriptorCollection(dds)
 
     def get_down_processes(self):
-        pass
-        # TODO
-        # entity_id = self['id']
-        # process_ids = services.neo_service.get_down_process_ids(entity_id)
+        entity_id = self['id']
+        docs = services.arango_service.get_dn_processes(self.index_type_def, entity_id)
 
-        # pdc = None
-        # if process_ids is None:
-        #     pdc = DataDescriptorCollection()
-        # else:
-        #     q = services.Query('process', {})
-        #     q.has({'id': process_ids})
-        #     pdc = q.find()
-        # return pdc
+        dds = []
+        for doc in docs:
+            dds.append( ProcessDescriptor(doc) )
+        return DataDescriptorCollection(dds)
 
     def provenance(self):
         return self.__provenance
@@ -167,33 +159,26 @@ class ProcessDescriptor(DataDescriptor):
         super().__init__('Process', doc)
 
     def get_input_data_descriptors(self):
-        pass
-        # TODO
-        # ddc = DataDescriptorCollection()
-
-        # process_id = self['id']
-        # entity_type_ids = services.neo_service.get_input_type_ids(process_id)
-        # for etype in entity_type_ids:
-        #     q = services.Query(etype, {})
-        #     q.has({'id': entity_type_ids[etype]})
-        #     ddc.add_data_descriptors(q.find())
-
-        # return ddc
+        process_id = self['id']
+        type2docs = services.arango_service.get_process_inputs(process_id)
+        return self.__to_type2descriptors(type2docs)
 
     def get_output_data_descriptors(self):
-        pass
-        # TODO
-        # ddc = DataDescriptorCollection()
+        process_id = self['id']
+        type2docs = services.arango_service.get_process_outputs(process_id)
+        return self.__to_type2descriptors(type2docs)
 
-        # process_id = self['id']
-        # entity_type_ids = services.neo_service.get_output_type_ids(process_id)
-
-        # for etype in entity_type_ids:
-        #     q = services.Query(etype, {})
-        #     q.has({'id': entity_type_ids[etype]})
-        #     ddc.add_data_descriptors(q.find())
-
-        # return ddc
+    def __to_type2descriptors(self, type2docs):
+        type2descriptors = {}
+        for type_name, docs in type2docs.items():
+            itd = services.indexdef.get_type_def(type_name)
+            if type_name == TYPE_NAME_BRICK:
+                dds = [ BrickDescriptor(doc) for doc in docs ]
+            else:
+                dds = [ EntityDescriptor(itd, doc) for doc in docs ]
+            
+            type2descriptors[type_name] = DataDescriptorCollection(dds)
+        return type2descriptors
 
 
 class BrickDescriptor(EntityDescriptor):
@@ -205,7 +190,7 @@ class BrickDescriptor(EntityDescriptor):
         data['value_type'] = data['value_type_term_name']
         data['shape'] = data['dim_sizes']
 
-        super().__init__('Brick', data)
+        super().__init__( services.indexdef.get_type_def(TYPE_NAME_BRICK), data)
 
     def table_view_properties(self):
         return ['brick_id', 'brick_type', 'shape',
@@ -262,16 +247,13 @@ class BrickIndexDocumnet:
             'name': 'text',
             'description': 'text',
             'n_dimensions': 'int',
-            'data_type_term_id': 'text',
-            'data_type_term_name': 'text',
-            'value_type_term_id': 'text',
-            'value_type_term_name': 'text',
-            'dim_type_term_ids': '[text]',
-            'dim_type_term_names': '[text]',
+            'data_type': 'term',
+            'value_type': 'term',
+            'dim_types': '[term]',
             'dim_sizes': '[int]',
-            'all_term_ids': '[text]',
+            'all_terms': '[term]',
             'all_term_values': '[text]',
-            'all_parent_path_term_ids': '[text]'
+            'all_parent_path_terms': '[term]'
         }
 
     def __init__(self, brick):

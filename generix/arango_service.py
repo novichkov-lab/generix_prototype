@@ -1,5 +1,5 @@
 import pandas as pd
-from .typedef import TYPE_NAME_BRICK, TYPE_CATEGORY_DYNAMIC, TYPE_CATEGORY_STATIC
+from .typedef import TYPE_NAME_BRICK, TYPE_NAME_PROCESS, TYPE_CATEGORY_DYNAMIC, TYPE_CATEGORY_STATIC
 from .ontology import Term
 from .descriptor import DataDescriptorCollection, ProcessDescriptor, EntityDescriptor, IndexDocument, BrickIndexDocumnet
 from . import services
@@ -15,9 +15,23 @@ class ArangoService:
     def db(self):
         return self.__db
 
+
+    def create_collection(self, collection_name):
+        self.__db.createCollection(name=collection_name)
+
+    def create_edge_collection(self, collection_name):
+        self.__db.createCollection(name=collection_name, className='Edges')
+
     def create_brick_index(self):
         type_def = services.indexdef.get_type_def(TYPE_NAME_BRICK)
-        self.__db.createCollection(name=type_def.collection_name)
+        self.create_collection(type_def.collection_name)
+
+    def create_index(self, type_def):
+        self.create_collection(type_def.collection_name)
+
+    def drop_index(self, type_def):
+        self.__db[type_def.collection_name].delete()
+
 
     def upsert_doc(self, upsert_condition, doc, type_name, category):
         aql = 'UPSERT @upsert INSERT @doc REPLACE @doc IN @@collection'
@@ -56,211 +70,62 @@ class ArangoService:
     def find(self, aql, aql_bind, size=100):
         return self.__db.AQLQuery(aql,  bindVars=aql_bind,  rawResults=True, batchSize=size)        
 
-    def create_index(self, type_def):
-        self.__db.createCollection(name=type_def.collection_name)
+    def get_up_processes(self, index_type_def, obj_id, size = 100):
+        aql = '''
+                FOR spo IN SYS_ProcessOutput FILTER spo._to == @id
+                FOR x IN SYS_Process FILTER spo._from == x._id
+                RETURN DISTINCT x
+        '''
+        aql_bind = {'id':  index_type_def.collection_name + '/' + obj_id}
+        return self.__db.AQLQuery(aql,  bindVars=aql_bind,  rawResults=True, batchSize=size)        
 
-    def drop_index(self, type_def):
-        self.__db[type_def.collection_name].delete()
+    def get_dn_processes(self, index_type_def, obj_id, size = 100):
+        aql = '''
+                FOR spi IN SYS_ProcessInput FILTER spi._from == @id
+                FOR x IN SYS_Process FILTER spi._to == x._id
+                RETURN DISTINCT x
+        '''
+        aql_bind = {'id':  index_type_def.collection_name + '/' + obj_id}
+        return self.__db.AQLQuery(aql,  bindVars=aql_bind,  rawResults=True, batchSize=size)        
 
-    # def _build_query(self, key_values):
-    #     items = []
-    #     for key, value in key_values.items():
-    #         tt, filed_name = key.split('.')
-    #         items.append({
-    #             tt: {filed_name: value}
-    #         })
+    def get_process_inputs(self, process_id, size = 100):
+        process_itd = services.indexdef.get_type_def(TYPE_NAME_PROCESS)
+        aql = '''
+            for pi in SYS_ProcessInput filter pi._to == @id
+            return distinct document(pi._from)        
+        '''
+        aql_bind = {'id': process_itd.collection_name  + '/' + process_id}
+        rs = self.__db.AQLQuery(aql,  bindVars=aql_bind,  rawResults=True, batchSize=size)        
+        return self.__to_type2objects(rs)
 
-    #     query = {
-    #         'query': {
-    #             'constant_score': {
-    #                 'filter': {
-    #                     'bool': {
-    #                         'must': items
-    #                     }
-    #                 }
-    #             }
-    #         }
-    #     }
-    #     return query
+    def get_process_outputs(self, process_id, size = 10000):
+        process_itd = services.indexdef.get_type_def(TYPE_NAME_PROCESS)
+        aql = '''
+            for po in SYS_ProcessOutput filter po._from == @id
+            return distinct document(po._to)        
+        '''
+        aql_bind = {'id': process_itd.collection_name  + '/' + process_id}
 
-    # TODO
-    # def _find_entities(self, entity_type, query, size=10000):
-    #     query['size'] = size
-    #     entity_descriptors = []
-    #     index_name = self._index_name(entity_type)
+        print('aql', aql)
+        print('aql_bind', aql_bind)
+        rs = self.__db.AQLQuery(aql,  bindVars=aql_bind,  rawResults=True, batchSize=size)        
+        return self.__to_type2objects(rs)
 
-    #     result_set = self.__es_client.search(
-    #         index=index_name, body=query)
+    
+    def __to_type2objects(self, aql_rs):
+        type2objects = {}
+        for row in aql_rs:
+            _id = row['_id']
+            type_name = _id.split('/')[0][4:]
+        
+            objs = type2objects.get(type_name)
+            if objs is None:
+                objs = []
+                type2objects[type_name] = objs
+            objs.append(row)
 
-    #     for hit in result_set['hits']['hits']:
-    #         data = hit["_source"]
-    #         bd = ProcessDescriptor(
-    #             data) if entity_type == 'process' else EntityDescriptor(entity_type, data)
+        return type2objects
 
-    #         entity_descriptors.append(bd)
-    #     return entity_descriptors
-
-
-    # TODO
-    # def _find_entity_ids(self, entity_type, id_field_name, query, size=100):
-    #     query['size'] = size
-    #     query['_source'] = [id_field_name]
-
-    #     ids = []
-    #     index_name = self._index_name(entity_type)
-
-    #     # print('Doing index name:' + index_name)
-    #     result_set = self.__es_client.search(index=index_name, body=query)
-
-    #     for hit in result_set['hits']['hits']:
-    #         ids.append(hit["_source"][id_field_name])
-    #     return ids
-
-    def _find_bricks(self, query, size=1000):
-        query['size'] = size
-        query['_source'] = [
-            'id',
-            'name',
-            'description',
-            'data_type_term_id',
-            'data_type_term_name',
-            'dim_sizes',
-            'n_dimensions',
-            'dim_type_term_ids',
-            'dim_type_term_names',
-            'value_type_term_id',
-            'value_type_term_name'
-        ]
-        query['sort'] = ['data_type_term_name', 'id']
-
-        brick_descriptors = []
-        try:
-            result_set = self.__es_client.search(
-                index=_ES_BRICK_INDEX_NAME, body=query)
-
-            # print('entity_type:', 'brick')
-            # print('index_name:', _ES_BRICK_INDEX_NAME)
-            # print('Query:', query)
-            # print('result_set:', result_set)
-
-            for hit in result_set['hits']['hits']:
-                data = hit["_source"]
-                bd = BrickDescriptor(data)
-                brick_descriptors.append(bd)
-        except:
-            print('Error: can not get bricks')
-        return brick_descriptors
-
-    def find_ids(self, brick_ids):
-        query = {
-            "query": {
-                "terms": {
-                    "id": brick_ids
-                }
-            }
-        }
-        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
-
-    def find_parent_term_ids(self, parent_term_ids):
-        query = {
-            "query": {
-                "terms": {
-                    "all_parent_path_term_ids": parent_term_ids
-                }
-            }
-        }
-        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
-
-    def find_parent_terms(self, parent_terms):
-        term_ids = [t.term_id for t in parent_terms]
-        return self.find_parent_term_ids(term_ids)
-
-    def find_data_type_term_ids(self, data_type_term_ids):
-        query = {
-            "query": {
-                "terms": {
-                    "data_type_term_id": data_type_term_ids
-                }
-            }
-        }
-        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
-
-    def find_data_type_terms(self, data_type_terms):
-        term_ids = [t.term_id for t in data_type_terms]
-        return self.find_data_type_term_ids(term_ids)
-
-    def find_value_type_term_ids(self, value_type_term_ids):
-        query = {
-            "query": {
-                "terms": {
-                    "value_type_term_id": value_type_term_ids
-                }
-            }
-        }
-        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
-
-    def find_value_type_terms(self, value_type_terms):
-        term_ids = [t.term_id for t in value_type_terms]
-        return self.find_value_type_term_ids(term_ids)
-
-    def find_dim_type_term_ids(self, dim_type_term_ids):
-        query = {
-            "query": {
-                "terms": {
-                    "dim_type_term_ids": dim_type_term_ids
-                }
-            }
-        }
-        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
-
-    def find_dim_type_terms(self, dim_type_terms):
-        term_ids = [t.term_id for t in dim_type_terms]
-        return self.find_dim_type_term_ids(term_ids)
-
-    def find_term_ids(self, term_ids):
-        query = {
-            "query": {
-                "terms": {
-                    "all_term_ids": term_ids
-                }
-            }
-        }
-        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
-
-    def find_terms(self, terms):
-        term_ids = [t.term_id for t in terms]
-        return self.find_term_ids(term_ids)
-
-    def find_term_id_values(self, term_id, values):
-        property = 'ont_' + '_'.join(term_id.split(':'))
-        query = {
-            "query": {
-                "terms": {
-                    property: values
-                }
-            }
-        }
-        return DataDescriptorCollection(data_descriptors=self._find_bricks(query))
-
-    def find_term_values(self, term, values):
-        return self.find_term_id_values(term.term_id, values)
-
-
-    # TODO
-    # def _index_name(self, doc_type):
-    #     doc_type = to_es_type_name(doc_type)
-    #     return _ES_BRICK_INDEX_NAME if doc_type == 'brick' else _ES_ENTITY_INDEX_NAME_PREFIX + doc_type
-
-    # def get_entity_properties(self, type_name):
-    #     doc_type = type_name
-    #     # index_name = 'generix-'
-    #     # if doc_type != 'brick':
-    #     #     index_name += 'entity-'
-    #     # index_name += doc_type
-
-    #     index_name = self._index_name(doc_type)
-    #     doc = self.__es_client.indices.get_mapping(index=index_name)
-    #     return list(doc[index_name]['mappings'][doc_type]['properties'].keys())
 
 
 
