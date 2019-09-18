@@ -3,14 +3,19 @@ from flask import Response
 from flask import request
 from flask_cors import CORS
 import pandas as pd
-from . import services
-from .brick import Brick
+import re
+
+# from . import services
+# from .brick import Brick
+
 from .dataprovider import DataProvider
-from .typedef import TYPE_CATEGORY_STATIC
+from .typedef import TYPE_CATEGORY_STATIC, TYPE_CATEGORY_DYNAMIC
 
 app = Flask(__name__)
 CORS(app)
-
+dp = DataProvider()
+svs = dp._get_services()
+cns = dp._get_constants()
 
 @app.route("/")
 def hello():
@@ -19,21 +24,21 @@ def hello():
 @app.route("/search_ont_dtypes/<value>", methods=['GET'])
 def search_ont_dtypes(value):
     # value = request.args.get('term')
-    return _search_oterms(services.ontology.data_types, value)
+    return _search_oterms(svs['ontology'].data_types, value)
 
 @app.route("/search_ont_all/<value>", methods=['GET'])
 def search_ont_all(value):
     # value = request.args.get('term')
-    return _search_oterms(services.ontology.all, value)
+    return _search_oterms(svs['ontology'].all, value)
 
 @app.route("/search_ont_units/<value>", methods=['GET'])
 def search_ont_units(value):
     # value = request.args.get('term')
-    return _search_oterms(services.ontology.units, value)
+    return _search_oterms(svs['ontology'].units, value)
 
 @app.route("/brick_type_templates", methods=['GET'])
 def brick_type_templates():
-    file_contxt = open(services._BRICK_TYPE_TEMPLATES_FILE).read()
+    file_contxt = open(cns['_BRICK_TYPE_TEMPLATES_FILE']).read()
     res = json.loads( file_contxt )
     return  json.dumps( {
         'results': res['types']
@@ -63,8 +68,15 @@ def core_types():
     #     props = services.arango_service.get_entity_properties(ctype)        
     #     res.append( { 'type' :ctype, 'props': props} )
 
-    type_defs = services.indexdef.get_type_defs(category=TYPE_CATEGORY_STATIC)
-    res = [ {'type': td.name, 'props': td.property_names} for td in type_defs]
+
+    type_defs = svs['indexdef'].get_type_defs(category=TYPE_CATEGORY_DYNAMIC)
+    for td in type_defs:
+        res.append({'type': td.name, 'props': td.property_names})
+
+    type_defs = svs['indexdef'].get_type_defs(category=TYPE_CATEGORY_STATIC)
+    # res = [ {'type': td.name, 'props': td.property_names} for td in type_defs]
+    for td in type_defs:
+        res.append({'type': td.name, 'props': td.property_names})
 
     return  json.dumps({
         'results': res
@@ -116,14 +128,32 @@ def do_search():
         print('Searching data')
         print(search_data)
 
-        dp = DataProvider()
+        # dp = DataProvider()
         provider = dp._get_type_provider(search_data['dataType'])
         q = provider.query()
         for criterion in search_data['criteriaHas']:
             # print('criterion = ', criterion)
             if 'property' not in criterion:
                 continue
-            q.has({criterion['property']: criterion['value']})
+
+            prop_name = criterion['property']
+            value = criterion['value']
+
+            # update value
+            itype_def = svs['indexdef'].get_type_def(search_data['dataType'])
+            iprop_def = itype_def.get_property_def(prop_name)
+            if iprop_def.scalar_type == 'int':
+                value = int(value)
+            if iprop_def.scalar_type == 'float':
+                value = float(value)            
+
+            q.has({prop_name: {criterion['operation']: value}})
+
+        for criterion in search_data['criteriaProcessOutput']:
+            prop_name = criterion['property']
+            value = criterion['value']
+            q.is_output_of_process({prop_name: {criterion['operation']: value}})
+
         res = q.find().to_df().head(n=100).to_json(orient="table", index=False)
         print(res)
         
@@ -147,11 +177,25 @@ def do_search():
             'res': res
     } )
 
+@app.route("/brick/<brick_id>", methods=['GET'])
+def get_brick(brick_id):
+    bp = dp._get_type_provider('Brick')
+    br = bp.load(brick_id)
+    
+    return json.dumps( {
+            'status': 'success',
+            'res': br.to_dict()
+    } )
+
+
+
+
 @app.route("/do_report/<value>", methods=['GET'])
 def do_report(value):
-    dp = DataProvider()
-    df = getattr(dp.reports, value)
-    res = df.head(n=100).to_json(orient="table", index=False)
+    report = getattr(svs['reports'], value)
+    # res = df.head(n=100).to_json(orient="table", index=False)
+    res = report.to_df().head(n=100).to_json(orient="table", index=False)
+    # res = df._repr_html_()
 
     return  json.dumps( {
             'status': 'success',
@@ -258,7 +302,7 @@ def _create_brick(brick_data):
         print('Dim size = %s' % dim_size)
         
     #TODO: get type term 
-    brick_type_term = services.ontology.data_types.find_id('DA:0000028')
+    brick_type_term = svs['ontology'].data_types.find_id('DA:0000028')
     brick_name = brick_data['name'] if "name" in brick_data else ""
     br = Brick(type_term=brick_type_term, 
         dim_terms = dim_type_terms, 
@@ -295,7 +339,7 @@ def _create_brick(brick_data):
 
 
 def _get_term(term_data):
-    return services.ontology.all.find_id( term_data['id'] ) if term_data['id'] != '' else None
+    return svs['ontology'].all.find_id( term_data['id'] ) if term_data['id'] != '' else None
 
 
 def _search_oterms(ontology, value):
@@ -312,7 +356,435 @@ def _search_oterms(ontology, value):
         'results': res
     })
 
+######## 
+## NEW VERSION
+########
+
+@app.route("/generix/data_types", methods=['GET'])
+def generix_data_types():
+    res = []
+    
+    # Core types
+    type_defs = svs['indexdef'].get_type_defs(category=TYPE_CATEGORY_STATIC)
+    for td in type_defs:
+        res.append({
+            'dataType': td.name, 
+            'dataModel': td.name,
+            'category': TYPE_CATEGORY_STATIC
+            })
+
+    # Dynamic types
+    bp = dp._get_type_provider('Brick')
+    for dt_name in bp.type_names():
+        res.append({
+            'dataType': dt_name, 
+            'dataModel': 'Brick',
+            'category': TYPE_CATEGORY_DYNAMIC
+        })
+
+    res.sort(key=lambda x: x['dataType']) 
+    return  json.dumps({'results': res})
+
+@app.route("/generix/data_models", methods=['GET'])
+def generix_data_models():
+    res = {}
+
+    type_defs = svs['indexdef'].get_type_defs()
+    for td in type_defs:
+
+        pdefs = []
+        for pdef in td.property_defs:
+            pdefs.append( {'name': pdef.name, 'scalar_type': pdef.scalar_type} )
+
+        res[td.name] = {
+            'dataModel': td.name,
+            'category': td.category,
+            'properties': pdefs
+        }
+
+    return  json.dumps({'results': res})
+
+@app.route('/generix/brick_metadata/<brick_id>', methods=['GET'])
+def generix_brick_metadata(brick_id):
+    bp = dp._get_type_provider('Brick')
+    br = bp.load(brick_id)
+    
+    return br.to_json(exclude_data_values=True, typed_values_property_name=False)
+
+
+def _get_plot_data(query):
+    ''' We will currently support 1D and 2D and only the first data variable '''
+
+    bp = dp._get_type_provider('Brick')
+    brick_id = query['objectId']
+    try:
+        br = bp.load(brick_id)  
+    except:
+        return {
+            'results': '', 
+            'status': 'ERR', 
+            'error': 'Can not load brick: %s' % brick_id}
+
+    # support mean
+    if 'constraints' in query:
+        for dimIndex, cst in query['constraints'].items():
+            dimIndex = int(dimIndex)
+            if cst == 'mean':
+                br = br.mean(br.dims[dimIndex])
+
+    if br.dim_count > 2:
+        return {
+            'results': '', 
+            'status': 'ERR', 
+            'error': 'The current version can support only 1D and 2D objects'}
+
+    # Get all axes
+    axes = list(query['data'].keys())
+    if len(axes) != br.dim_count + 1:
+        return {
+            'results': '', 
+            'status': 'ERR', 
+            'error': '#axes should equal to #dimensions -1'}
+
+    # Dimension indeces to axes
+    dim_index2axis = {}
+    for axis in axes:
+        dim_index = query['data'][axis]
+        dim_index2axis[dim_index] = axis
+
+    res = {}
+
+    for axis in axes:
+        dim_index = query['data'][axis]
+        if type(dim_index) is int:
+            label_pattern = query['config'][axis]['label_pattern']
+            res[axis] = _build_dim_labels(br.dims[dim_index],label_pattern)
+        else:
+            if br.dim_count == 1:
+                res[axis] = br.data_vars[0].values.tolist()
+            elif br.dim_count == 2:
+                if dim_index2axis[dim_index] == 'x':
+                    res[axis] = br.data_vars[0].values.tolist()
+                else:
+                    res[axis] = br.data_vars[0].values.T.tolist()
+
+    return  {
+                'results': res,     
+                'status': 'OK', 
+                'error': ''
+            }
+
+@app.route('/generix/plotly_data', methods=['POST'])
+def generix_plotly_data():
+    query = request.json
+    d = _get_plot_data(query)
+    if d['status'] != 'OK':
+        return json.dumps(d)
+
+    rs = d['results']
+
+    # Build layout
+    layout = {
+        'width': 800,
+        'height': 600,
+        'title': query['config']['title'],
+        **query['plotly_layout']
+    }
+    if 'x' in query['config']:
+        if query['config']['x']['show_title']:
+            layout['xaxis'] = {
+              'title': query['config']['x']['title']  
+            }
+
+    if 'y' in query['config']:
+        if query['config']['y']['show_title']:
+            layout['yaxis'] = {
+              'title': query['config']['y']['title']  
+            }
+
+    # Build layout
+    data = []
+    plot_type = query['plotly_trace'].get('type')
+    if plot_type == 'heatmap':
+        trace = {
+            'x': rs['x'],
+            'y': rs['y'],
+            'z': rs['z'],
+            **query['plotly_trace']             
+        }        
+        data.append(trace)        
+    else:
+        if 'z' in d['results']:
+            for zindex, zval in enumerate(rs['z']):
+                trace = {
+                    'x': rs['x'][zindex] if query['data']['x'] == 'D' else rs['x'],
+                    'y': rs['y'][zindex] if query['data']['y'] == 'D' else rs['y'],
+                    'name': zval,
+                    **query['plotly_trace']            
+                }
+                data.append(trace)
+        else:
+            trace = {
+                'x': rs['x'],
+                'y': rs['y'],
+                **query['plotly_trace']             
+            }        
+            data.append(trace)
+
+    return json.dumps({
+        'results': {
+            'layout': layout,
+            'data': data
+        },     
+        'status': 'OK', 
+        'error': ''
+    })
+
+
+
+@app.route('/generix/plot_data', methods=['POST'])
+def generix_plot_data():
+    d = _get_plot_data(request.json)
+    return json.dumps(d)
+
+def _build_dim_labels(dim, pattern):
+    labels = []
+    for i in range(dim.size):
+        label = pattern
+        for vi, dvar in enumerate(dim.vars):
+            vi += 1
+            label = re.sub(r'#V%s'%vi, str(dvar.values[i]), label )
+        labels.append(label)
+    return labels
+
+
+
+@app.route('/generix/plot_data_test', methods=['POST'])
+def generix_plot_data_test():
+    query = request.json
+    bp = dp._get_type_provider('Brick')
+    # brick_id = query['objectId']
+    # br = bp.load(brick_id)  
+    br = bp.load('Brick0000003')  
+    # br = bp.load('Brick0000023')  
+    br.mean(br.dims[2])     
+
+    res = {}
+    # axes = list(query['data'].keys())
+    # for axis in axes:
+    #     dimIndex = query['data'][axis]
+    #     if type(dimIndex) is int:
+
+    x = br.dims[0].vars[0].values.tolist()
+    y = br.data_vars[0].values.tolist()
+    z = []  
+    for i in range(br.dims[1].size):
+        label = ''
+        for dvar in br.dims[1].vars:
+            label = label + str(dvar.values[i]) + '; ' 
+        z.append(
+            label
+        )
+
+    res = {
+        'x' : x,
+        'y': y,
+        'z' : z
+    }
+    return  json.dumps({'results': res})
+
+
+def _extract_criterion_props(criterion):
+    prop_name = criterion['attribute']
+    prop_value = criterion['keyword']
+    scalar_type = criterion['scalarType']
+    operation = criterion['matchType']
+
+    # update value
+    if scalar_type == 'int':
+        prop_value = int(prop_value)
+    elif scalar_type == 'float':
+        prop_value = float(prop_value)   
+    return (prop_name, prop_value, operation)           
+
+
+@app.route('/generix/search', methods=['GET','POST'])
+def generix_search():
+    # {
+    # "processesUp": [
+    #     {
+    #     "attribute": "qui est esse",
+    #     "scalarType": "text",
+    #     "matchType": "Contains",
+    #     "keyword": "qui est esse"
+    #     },
+    #     {
+    #     "attribute": "ea molestias quasi exercitationem repellat qui ipsa sit aut",
+    #     "scalarType": "text",
+    #     "matchType": "Match",
+    #     "keyword": "eum et est occaecati"
+    #     }
+    # ],
+    # "processesDown": [
+    #     {
+    #     "attribute": "eveniet quod temporibus",
+    #     "scalarType": "text",
+    #     "matchType": "Contains",
+    #     "keyword": "qui est esse"
+    #     }
+    # ],
+    # "queryMatch": {
+    #     "dataType": "core",
+    #     "dataModel": "Graph",
+    #     "params": [
+    #     {
+    #         "attribute": "eum et est occaecati",
+    #         "scalarType": "int",
+    #         "matchType": "Contains",
+    #         "keyword": "qui est esse"
+    #     },
+    #     {
+    #         "attribute": "nesciunt quas odio",
+    #         "scalarType": "text",
+    #         "matchType": "Match",
+    #         "keyword": "nesciunt quas odio"
+    #     }
+    #     ]
+    # },
+    # "connectsUpTo": {
+    #     "dataType": "core",
+    #     "dataModel": "Graph",
+    #     "params": [
+    #     {
+    #         "attribute": "qui est esse",
+    #         "scalarType": "text",
+    #         "matchType": "Match",
+    #         "keyword": "qui est esse"
+    #     },
+    #     {
+    #         "attribute": "qui est esse",
+    #         "scalarType": "text",
+    #         "matchType": "Contains",
+    #         "keyword": "ea molestias quasi exercitationem repellat qui ipsa sit aut"
+    #     }
+    #     ]
+    # },
+    # "connectsDownto": {
+    #     "dataType": "core",
+    #     "dataModel": "Graph",
+    #     "params": [
+    #     {
+    #         "attribute": "qui est esse",
+    #         "scalarType": "text",
+    #         "matchType": "Contains",
+    #         "keyword": "qui est esse"
+    #     },
+    #     {
+    #         "attribute": "magnam facilis autem",
+    #         "scalarType": "text",
+    #         "matchType": "Match",
+    #         "keyword": "magnam facilis autem"
+    #     }
+    #     ]
+    # }
+    # }
+
+    search_data = request.json
+
+    # Do queryMatch
+    query_match = search_data['queryMatch']
+    provider = dp._get_type_provider(query_match['dataModel'])
+    q = provider.query()
+
+    if query_match['dataModel'] == 'Brick':
+        q.has({'data_type': {'=': query_match['dataType']}})
+
+    for criterion in query_match['params']:
+        (prop_name, prop_value, operation) = _extract_criterion_props(criterion)
+        q.has({prop_name: {operation: prop_value}})
+
+    # Do processesUp
+    if 'processesUp' in search_data:
+        for criterion in search_data['processesUp']:
+            (prop_name, prop_value, operation) = _extract_criterion_props(criterion)
+            q.is_output_of_process({prop_name: {operation: prop_value}})
+
+    # Do processesDown
+    if 'processesDown' in search_data:
+        for criterion in search_data['processesDown']:
+            (prop_name, prop_value, operation) = _extract_criterion_props(criterion)
+            q.is_input_of_process({prop_name: {operation: prop_value}})
+
+    # Do connectsUpTo
+    if 'connectsUpTo' in search_data:
+        connects_up_to = search_data['connectsUpTo']
+        params = {}
+        for criterion in connects_up_to['params']:
+            (prop_name, prop_value, operation) = _extract_criterion_props(criterion)
+            params['prop_name'] = {operation: prop_value}
+
+        q.linked_up_to(connects_up_to['dataModel'],  params )
+
+    # Do connectsDownTo
+    if 'connectsDownTo' in search_data:
+        connects_down_to = search_data['connectsDownTo']
+        params = {}
+        for criterion in connects_down_to['params']:
+            (prop_name, prop_value, operation) = _extract_criterion_props(criterion)
+            params['prop_name'] = {operation: prop_value}
+
+        q.linked_down_to(connects_down_to['dataModel'],  params )
+
+    res = q.find().to_df().head(n=100).to_json(orient="table", index=False)
+    # return  json.dumps( {'res': res} )
+    return res
+
+
+
+
+@app.route("/generix/search_operations", methods=['GET'])
+def generix_search_operations():
+    # '=':  FILTER_EQ,
+    # '==': FILTER_EQ,
+    # 'eq': FILTER_EQ,
+    # '>':  FILTER_GT,
+    # 'gt': FILTER_GT,
+    # '<':  FILTER_LT,
+    # 'lt': FILTER_LT,
+    # '>=': FILTER_LTE,
+    # 'gte':FILTER_LTE,
+    # '<=': FILTER_LTE,
+    # 'lte':FILTER_LTE,
+    # 'fulltext': FILTER_FULLTEXT,
+    # 'match': FILTER_FULLTEXT,
+    # 'like': FILTER_FULLTEXT,
+    # 'in': FILTER_IN    
+
+    res = ['=','>','<','>=','<=','like']
+    return  json.dumps({'results': res})
+
+@app.route("/generix/plot_types", methods=['GET'])
+def generix_plot_types():
+    fname = cns['_PLOT_TYPES_FILE']
+    try:
+        plot_types = json.loads(open(fname).read())['plot_types']
+    except Exception as e:
+        return json.dumps({
+            'results': '', 
+            'status': 'ERR', 
+            'error': str(e)})
+        
+    return json.dumps({
+        'results': plot_types, 
+        'status': 'OK', 
+        'error': ''})
 
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8081)
+    port = cns['_WEB_SERVICE']['port']
+    if cns['_WEB_SERVICE']['https']:
+        app.run(host='0.0.0.0', port=port, 
+            ssl_context = (cns['_WEB_SERVICE']['cert_pem'], cns['_WEB_SERVICE']['key_pem']) )
+    else:
+        app.run(host='0.0.0.0', port=port)
+
