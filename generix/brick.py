@@ -533,10 +533,13 @@ class Brick:
         q.has({'id': self.id})
         return q.find_one()
 
-    def to_json(self):
-        return json.dumps(self.to_dict(), cls=NPEncoder)
+    def to_json(self, exclude_data_values=False, typed_values_property_name=True):
+        return json.dumps(
+            self.to_dict(exclude_data_values=exclude_data_values,
+                typed_values_property_name=typed_values_property_name ), 
+            cls=NPEncoder)
 
-    def to_dict(self):
+    def to_dict(self, exclude_data_values=False, typed_values_property_name=True):
         data = {}
 
         # ds.attrs['__id'] = brick_id
@@ -584,6 +587,9 @@ class Brick:
             else:
                 value_key = attr.scalar_type + '_value'
                 value_val = attr.value
+
+            if not typed_values_property_name:
+                value_key = 'value'
 
             data['array_context'].append({
                 'value_type':{
@@ -653,7 +659,11 @@ class Brick:
                 else:
                     value_key = var.scalar_type + '_values'
                     value_vals = list(var.values)
-    
+
+                if not typed_values_property_name:
+                    value_key = 'values'
+
+
                 var_data = {
                     'value_type': {
                         'oterm_ref': var.type_term.term_id,
@@ -684,6 +694,9 @@ class Brick:
                         value_key = attr.scalar_type + '_value'
                         value_val = attr.value
 
+                    if not typed_values_property_name:
+                        value_key = 'value'
+
                     var_data['value_context'].append({
                         'value_type':{
                             'oterm_ref': attr.type_term.term_id,
@@ -708,17 +721,21 @@ class Brick:
                 value_key = vard.scalar_type + '_values'
                 value_vals = list(vard.values)
 
+            if not typed_values_property_name:
+                value_key = 'values'
+
             values_data = {
                 'value_type': {
                     'oterm_ref': vard.type_term.term_id,
                     'oterm_name': vard.type_term.term_name
-                },
-                'values': {
-                    'scalar_type': vard.scalar_type,
-                    value_key: value_vals
-                },
+                },                
                 'value_context': []
             }
+            if not exclude_data_values:
+                values_data['values'] = {
+                    'scalar_type': vard.scalar_type,
+                    value_key: value_vals
+                }
 
             # Do units
             if vard.units_term is not None:
@@ -737,6 +754,9 @@ class Brick:
                 else:
                     value_key = attr.scalar_type + '_value'
                     value_val = attr.value
+
+                if not typed_values_property_name:
+                    value_key = 'value'
 
                 values_data['value_context'].append({
                     'value_type':{
@@ -1542,3 +1562,126 @@ class DimensionFilter:
         return self.__logical_trasnform(data_filter, '__or__', np.logical_or)
 
     
+class BrickTemplateProvider:
+    def __init__(self, file_name):
+        self.__templates = json.loads(open(file_name).read())    
+        self._validate_and_update()
+    
+    @property
+    def templates(self):
+        return self.__templates
+    
+    def _validate_and_update(self):
+        for btype in self.__templates['types']:
+            # Validate category:
+            # Example:
+            # "text" : "Chemical Measurement",
+            # "data_type" : "DA:0000005",
+            self._validate_term( id=btype['data_type'], name=btype['text'])
+
+            #validate all templates for a given btype
+            for template in btype['children']:
+                # validate and update properties 
+                for prop in template['properties']:
+                    term = self._validate_and_update_type(prop['property'])
+                    self._validate_value(term, prop['value'])                    
+                    self._validate_units(term, prop['units'])
+                
+            #validate dimensions
+            for dim in btype['dims']:
+                self._validate_type(dim['type'])
+
+                for dim_var in dim['dim_vars']:
+                    term = self._validate_and_update_type(dim_var['type'])
+                    self._validate_units(term, dim_var['units'])
+            
+            #validate data vars
+            for data_var in btype['data_vars']:
+                term = self._validate_and_update_type(data_var['type'])
+                self._validate_units(term, data_var['units'])
+            
+            #validate process
+            self._validate_type(btype['process'])
+
+    def _validate_and_update_type(self, ptype):
+        term = self._validate_type(ptype)
+        ptype.clear()
+        ptype.update(term.to_descriptor())
+        return term
+
+    def _validate_type(self, ptype):
+        return self._validate_term( id=ptype['id'], name=ptype['text'])
+
+    def _validate_term(self, id=None, name=None):
+        # Find and validate term_id
+        term = services.term_provider.get_term(id)            
+
+        # Validate term_name
+        if term.term_name != name:
+            raise ValueError('Wrong term (%s) name: expected %s, observed %s' % (
+                term.term_id, name, term.term_name
+                ))
+
+        return term
+
+    def _validate_value(self, term, value):
+        value_term_id = value['id']    
+        value_term_name = value['text']
+
+        if term.microtype_value_scalar_type == 'oterm_ref':
+            # Find and validate value term_id
+            vterm = self._validate_term(id=value_term_id, name=value_term_name)
+
+            # Validate parents
+            if term.microtype_valid_values_parent:
+                valid_parent_found = False
+                parent_path_ids = vterm.parent_path_ids
+                for parent_id in term.microtype_valid_values_parent:
+                    if parent_id in parent_path_ids:
+                        valid_parent_found = True
+                        break
+                if not valid_parent_found:
+                    raise ValueError('''Wrong value: the value term "%s" is not a child of 
+                        any terms defined as valid parents in the term "%s"''' % (
+                            vterm.term_id + ':' + vterm.term_name,
+                            term.term_id + ':' + term.term_name
+                        ))                       
+
+            
+
+    def _validate_units(self, term, units):
+        units_term_id = units['id']    
+        units_term_name = units['text']
+
+        if term.has_units:
+            if units_term_id:
+                # Validate untis term
+                uterm = self._validate_term(id=units_term_id, name=units_term_name)
+
+                parent_found = False
+                if term.microtype_valid_units:
+                    if units_term_id in term.microtype_valid_units:
+                        parent_found = True
+                elif term.microtype_valid_units_parent:
+                    parent_ids = uterm.parent_path_ids
+                    for parent_id in term.microtype_valid_units_parent:
+                        if parent_id in parent_ids:
+                            parent_found = True
+                            break
+                if not parent_found:
+                    raise ValueError('''Wrong units: the units term "%s" is not a child (or representative) of 
+                        any terms defined as valid parents in the term "%s"''' % (
+                            uterm.term_id + ':' + uterm.term_name,
+                            term.term_id + ':' + term.term_name
+                        ))                       
+                    
+
+
+
+
+
+
+
+
+    
+        
