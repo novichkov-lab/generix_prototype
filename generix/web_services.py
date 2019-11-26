@@ -3,6 +3,7 @@ from flask import Response
 from flask import request
 from flask_cors import CORS
 import pandas as pd
+import numpy as np
 import re
 import random 
 from simplepam import authenticate
@@ -31,9 +32,12 @@ _PERSONNEL_PARENT_TERM_ID = 'ENIGMA:0000029'
 _CAMPAIGN_PARENT_TERM_ID = 'ENIGMA:0000002'
 _PROCESS_PARENT_TERM_ID = 'PROCESS:0000001'
 
-_BRICK_DATA_FILE_PREFIX = 'brick_data_'
-_BRICK_FILE_PREFIX = 'brick_'
-_TEMPATE_FILE_PREFIX = 'template_'
+_UPLOAD_TEMPLAT_PREFIX = 'utp_'
+_UPLOAD_DATA_STRUCTURE_PREFIX = 'uds_'
+_UPLOAD_DATA_FILE_PREFIX = 'udf_'
+_UPLOAD_PROCESSED_DATA_PREFIX = 'udp_'
+_UPLOAD_VALIDATED_DATA_PREFIX = 'uvd_'
+_UPLOAD_VALIDATION_REPORT_PREFIX = 'uvr_'
 
 
 @app.route("/")
@@ -343,74 +347,162 @@ def create_brick():
     #     input_obj_ids=input_obj_ids)
 
 
-    return  json.dumps( {
-            'status': 'OK',
-            'results': brick_id,
-            'error': ''
-    } )
+    return  _ok_response(brick_id)
 
+@app.route('/generix/validate_upload', methods=['POST'])
+def validate_upload():
+    try:
+        query = request.json
+        data_id = query['data_id']
+        file_name = os.path.join(TMP_DIR,_UPLOAD_PROCESSED_DATA_PREFIX 
+            + data_id)            
+        data = json.loads(open(file_name).read())
 
+        file_name = os.path.join(TMP_DIR, _UPLOAD_DATA_STRUCTURE_PREFIX + data_id )
+        brick_ds = json.loads(open(file_name).read())
+
+        validated_data = {
+            'dims':[],
+            'data_vars': []
+        } 
+
+        res = {
+            'dims':[],
+            'data_vars': []
+        }
+
+        # dataValues: scalarType: "text": "float"
+        # dimensions: variables: scalarType: "text": "string"
+        for dim_index, dim in enumerate(data['dims']):
+            dim_ds = brick_ds['dimensions'][dim_index]
+            res_dim_vars = []
+            res['dims'].append({
+                'dim_vars': res_dim_vars
+            })
+            validated_dim_vars = []
+            validated_data['dims'].append({
+                'dim_vars': validated_dim_vars
+            })
+            for dim_var_index, dim_var in enumerate(dim['dim_vars']):
+                dim_var_ds = dim_ds['variables'][dim_var_index]
+                vtype_term_id = dim_var_ds['_type']['id']
+                values = np.array(dim_var['values'], dtype='object')
+                
+                errors = svs['value_validator'].cast_var_values(values, vtype_term_id)
+
+                total_count = values.size
+                invalid_count = len(errors) 
+                res_dim_vars.append({
+                    'total_count': total_count,
+                    'valid_count': total_count - invalid_count,
+                    'invalid_count': invalid_count
+                })
+
+                validated_dim_vars.append({
+                    'values': values.tolist(),
+                    'errors': errors
+                })
+
+        for data_var_index, data_var in enumerate(data['data_vars']):
+            data_var_ds = brick_ds['dataValues'][data_var_index]
+            vtype_term_id = data_var_ds['_type']['id']
+            values = np.array(data_var['values'], dtype='object')
+            
+            errors = svs['value_validator'].cast_var_values(values, vtype_term_id)
+
+            total_count = values.size
+            invalid_count = len(errors) 
+            res['data_vars'].append({
+                'total_count': total_count,
+                'valid_count': total_count - invalid_count,
+                'invalid_count': invalid_count
+            })
+
+            validated_data['data_vars'].append({
+                'values': values.tolist(),
+                'errors': errors
+            })
+
+        # Save validated data
+        uvd_file_name = os.path.join(TMP_DIR, _UPLOAD_VALIDATED_DATA_PREFIX + data_id )
+        with open(uvd_file_name, 'w') as f:
+            json.dump(validated_data, f, sort_keys=True, indent=4)
+
+        # Save validated report
+        uvr_file_name = os.path.join(TMP_DIR, _UPLOAD_VALIDATION_REPORT_PREFIX + data_id )
+        with open(uvr_file_name, 'w') as f:
+            json.dump(res, f, sort_keys=True, indent=4)
+
+        return _ok_response(res) 
+
+    except Exception as e:
+        return _err_response(e)
 
 
 @app.route('/generix/upload', methods=['POST'])
 def upload_file():
-    brick_ui = json.loads(request.form['brick'])
-    
-    # Save file
-    f = request.files['files']
-    data_id = uuid.uuid4().hex
-    file_name = os.path.join(TMP_DIR,_BRICK_DATA_FILE_PREFIX 
-        + data_id + '_' + f.filename)
-    f.save( file_name )
-
-    # Parse brick data    
-    brick_data = {}
     try:
-        dim_count = len(brick_ui['dimensions'])
+        data_id = uuid.uuid4().hex
+
+        brick_ds = json.loads(request.form['brick'])
+
+        # Save birck data structure
+        uds_file_name = os.path.join(TMP_DIR, _UPLOAD_DATA_STRUCTURE_PREFIX + data_id )
+        with open(uds_file_name, 'w') as f:
+            json.dump(brick_ds, f, sort_keys=True, indent=4)
+        
+        # Save data file
+        f = request.files['files']
+        udf_file_name = os.path.join(TMP_DIR, _UPLOAD_DATA_FILE_PREFIX 
+            + data_id + '_' + f.filename)
+        f.save( udf_file_name )
+
+        # Parse brick data    
+        brick_data = {}
+
+        dim_count = len(brick_ds['dimensions'])
         if dim_count == 1:
-            brick_data = template.parse_brick_F1DM_data(brick_ui, file_name)
+            brick_data = template.parse_brick_F1DM_data(brick_ds, udf_file_name)
         elif dim_count == 2:
-            brick_data = template.parse_brick_F2DT_data(brick_ui, file_name)
+            brick_data = template.parse_brick_F2DT_data(brick_ds, udf_file_name)
         else:
             raise ValueError('Brick with %s dimensions is not supported yet' % dim_count)
-    except Exception as e:
-        return _err_response(e)
 
-    # # Build proto brick and save it in tmp file
-    # brick_proto = _create_brick(brick_ui, brick_data)
-    # file_name = os.path.join(TMP_DIR,_BRICK_FILE_PREFIX + data_id)
-    # _save_brick_proto(brick_proto, file_name)
+        # Save brick processed data
+        upd_file_name = os.path.join(TMP_DIR, _UPLOAD_PROCESSED_DATA_PREFIX + data_id )
+        with open(upd_file_name, 'w') as f:
+            json.dump(brick_data, f, sort_keys=True, indent=4)
 
-    # Build output (examples of values for dim vars and data vars)
-    dims = []
-    data_vars = []
 
-    for dim_data in brick_data['dims']:
-        dim = {
-            'size' : dim_data['size'],
-            'dim_vars': []
-        }
-        dims.append(dim)
+        # Build output (examples of values for dim vars and data vars)
+        dims = []
+        data_vars = []
 
-        for dim_var_data in dim_data['dim_vars']:
-            dim['dim_vars'].append({
-                'value_example': _dim_var_example(dim_var_data['values'])
+        for dim_data in brick_data['dims']:
+            dim = {
+                'size' : dim_data['size'],
+                'dim_vars': []
+            }
+            dims.append(dim)
+
+            for dim_var_data in dim_data['dim_vars']:
+                dim['dim_vars'].append({
+                    'value_example': _dim_var_example(dim_var_data['values'])
+                })
+
+        for data_var_data in brick_data['data_vars']:
+            data_vars.append({
+                'value_example': _data_var_example(data_var_data['values'])
             })
 
-    for data_var_data in brick_data['data_vars']:
-        data_vars.append({
-            'value_example': _data_var_example(data_var_data['values'])
-        })
+        return  _ok_response({
+                    'dims': dims,
+                    'data_vars': data_vars,
+                    'data_id': data_id
+                })
 
-    return  json.dumps( {
-            'status': 'OK',
-            'results': {
-                'dims': dims,
-                'data_vars': data_vars,
-                'data_id': data_id
-            },
-            'error': ''
-    } )
+    except Exception as e:
+        return _err_response(e)
 
 def _save_brick_proto(brick, file_name):
     data_json = brick.to_json()
@@ -559,6 +651,56 @@ def generix_data_models():
 
     return  json.dumps({'results': res})
 
+@app.route('/generix/brick_dimension/<brick_id>/<dim_index>', methods=['GET'])
+def generix_brick_dimension(brick_id, dim_index):
+    MAX_ROW_COUNT = 100
+    res = {}
+    try:
+        bp = dp._get_type_provider('Brick')
+        br = bp.load(brick_id)
+        dim = br.dims[int(dim_index)]
+        res = {
+            'type':{
+                'id': dim.type_term.term_id,
+                'text': dim.type_term.term_name
+            },
+            'size': dim.size,
+            'max_row_count': MAX_ROW_COUNT,
+            'dim_var_count': dim.var_count,
+            'dim_vars':[]
+        }
+        for dim_var in dim.vars:
+            context = []
+            for attr in dim_var.attrs:
+                context.append({
+                    'type':{
+                        'id': attr.type_term.term_id,
+                        'text': attr.type_term.term_name
+                    },
+                    'units':{
+                        'id': attr.units_term.term_id if attr.units_term else '',
+                        'text': attr.units_term.term_name if attr.units_term else ''
+                    },
+                    'value': str(attr.value)
+                })            
+
+            res['dim_vars'].append({
+                'type':{
+                    'id': dim_var.type_term.term_id,
+                    'text': dim_var.type_term.term_name
+                },
+                'units':{
+                    'id': dim_var.units_term.term_id if dim_var.units_term else '',
+                    'text': dim_var.units_term.term_name if dim_var.units_term else ''
+                },
+                'values': list([ str(val) for val in dim_var.values][:MAX_ROW_COUNT]),
+                'context': context
+            })
+    except Exception as e:
+        return _err_response(e)
+
+    return _ok_response(res)
+
 @app.route('/generix/brick_metadata/<brick_id>', methods=['GET'])
 def generix_brick_metadata(brick_id):
     bp = dp._get_type_provider('Brick')
@@ -575,10 +717,7 @@ def _get_plot_data(query):
     try:
         br = bp.load(brick_id)  
     except:
-        return {
-            'results': '', 
-            'status': 'ERR', 
-            'error': 'Can not load brick: %s' % brick_id}
+        raise ValueError('Can not load brick: %s' % brick_id)
 
     # support mean
     if 'constraints' in query:
@@ -588,18 +727,12 @@ def _get_plot_data(query):
                 br = br.mean(br.dims[dimIndex])
 
     if br.dim_count > 2:
-        return {
-            'results': '', 
-            'status': 'ERR', 
-            'error': 'The current version can support only 1D and 2D objects'}
+        raise ValueError('The current version can support only 1D and 2D objects')
 
     # Get all axes
     axes = list(query['data'].keys())
     if len(axes) != br.dim_count + 1:
-        return {
-            'results': '', 
-            'status': 'ERR', 
-            'error': '#axes should equal to #dimensions -1'}
+        raise ValueError('#axes should equal to #dimensions -1')
 
     # Dimension indeces to axes
     dim_index2axis = {}
@@ -623,84 +756,77 @@ def _get_plot_data(query):
                 else:
                     res[axis] = br.data_vars[0].values.T.tolist()
 
-    return  {
-                'results': res,     
-                'status': 'OK', 
-                'error': ''
-            }
+    return res
 
 @app.route('/generix/plotly_data', methods=['POST'])
 def generix_plotly_data():
     query = request.json
-    d = _get_plot_data(query)
-    if d['status'] != 'OK':
-        return json.dumps(d)
+    try:
+        rs = _get_plot_data(query)
 
-    rs = d['results']
-
-    # Build layout
-    layout = {
-        'width': 800,
-        'height': 600,
-        'title': query['config']['title'],
-        **query['plotly_layout']
-    }
-    if 'x' in query['config']:
-        if query['config']['x']['show_title']:
-            layout['xaxis'] = {
-              'title': query['config']['x']['title']  
-            }
-
-    if 'y' in query['config']:
-        if query['config']['y']['show_title']:
-            layout['yaxis'] = {
-              'title': query['config']['y']['title']  
-            }
-
-    # Build layout
-    data = []
-    plot_type = query['plotly_trace'].get('type')
-    if plot_type == 'heatmap':
-        trace = {
-            'x': rs['x'],
-            'y': rs['y'],
-            'z': rs['z'],
-            **query['plotly_trace']             
-        }        
-        data.append(trace)        
-    else:
-        if 'z' in d['results']:
-            for zindex, zval in enumerate(rs['z']):
-                trace = {
-                    'x': rs['x'][zindex] if query['data']['x'] == 'D' else rs['x'],
-                    'y': rs['y'][zindex] if query['data']['y'] == 'D' else rs['y'],
-                    'name': zval,
-                    **query['plotly_trace']            
+        # Build layout
+        layout = {
+            'width': 800,
+            'height': 600,
+            'title': query['config']['title'],
+            **query['plotly_layout']
+        }
+        if 'x' in query['config']:
+            if query['config']['x']['show_title']:
+                layout['xaxis'] = {
+                'title': query['config']['x']['title']  
                 }
-                data.append(trace)
-        else:
+
+        if 'y' in query['config']:
+            if query['config']['y']['show_title']:
+                layout['yaxis'] = {
+                'title': query['config']['y']['title']  
+                }
+
+        # Build layout
+        data = []
+        plot_type = query['plotly_trace'].get('type')
+        if plot_type == 'heatmap':
             trace = {
                 'x': rs['x'],
                 'y': rs['y'],
+                'z': rs['z'],
                 **query['plotly_trace']             
             }        
-            data.append(trace)
+            data.append(trace)        
+        else:
+            if 'z' in rs:
+                for zindex, zval in enumerate(rs['z']):
+                    trace = {
+                        'x': rs['x'][zindex] if query['data']['x'] == 'D' else rs['x'],
+                        'y': rs['y'][zindex] if query['data']['y'] == 'D' else rs['y'],
+                        'name': zval,
+                        **query['plotly_trace']            
+                    }
+                    data.append(trace)
+            else:
+                trace = {
+                    'x': rs['x'],
+                    'y': rs['y'],
+                    **query['plotly_trace']             
+                }        
+                data.append(trace)
 
-    return json.dumps({
-        'results': {
-            'layout': layout,
-            'data': data
-        },     
-        'status': 'OK', 
-        'error': ''
-    })
+        return _ok_response({
+                'layout': layout,
+                'data': data
+            })
 
-
+    except Exception as e:
+        return _err_response(e)
 
 @app.route('/generix/plot_data', methods=['POST'])
 def generix_plot_data():
-    d = _get_plot_data(request.json)
-    return json.dumps(d)
+    try:
+        res = _get_plot_data(request.json)
+        return _ok_response(res)
+    except Exception as e:
+        return _err_response(e)
 
 def _build_dim_labels(dim, pattern):
     labels = []
@@ -845,15 +971,9 @@ def generix_plot_types():
     try:
         plot_types = json.loads(open(fname).read())['plot_types']
     except Exception as e:
-        return json.dumps({
-            'results': '', 
-            'status': 'ERR', 
-            'error': str(e)})
+        return _err_response(e)
         
-    return json.dumps({
-        'results': plot_types, 
-        'status': 'OK', 
-        'error': ''})
+    return _ok_response(plot_types)
 
 @app.route("/generix/reports", methods=['GET'])
 def generix_reports():
@@ -884,10 +1004,7 @@ def generix_reports():
             'id': 'process_campaigns'
         }
     ]        
-    return json.dumps({
-        'results': reports, 
-        'status': 'OK', 
-        'error': ''})
+    return _ok_response(reports)
 
 @app.route("/generix/reports/<id>", methods=['GET'])
 def generix_report(id):
@@ -897,16 +1014,9 @@ def generix_report(id):
         df.columns = ['Category', 'Term ID', 'Count']
         res = df.head(n=1000).to_json(orient="table", index=False)
     except Exception as e:
-        return json.dumps({
-            'results': '', 
-            'status': 'ERR', 
-            'error': str(e)})
+        return _err_response(e)
 
-    return  json.dumps( {
-        'results': res, 
-        'status': 'OK', 
-        'error': ''
-    } )
+    return  _ok_response(res)
 
 @app.route("/generix/filters", methods=['GET'])
 def generix_filters():
@@ -924,11 +1034,7 @@ def generix_filters():
             'items': _get_category_items(df_persons, 'person')
         },
     ]
-    return  json.dumps( {
-        'results': res, 
-        'status': 'OK', 
-        'error': ''
-    } )    
+    return _ok_response(res)
 
 def _get_category_items(process_stat_df, attr):
     res = []
@@ -1029,11 +1135,7 @@ def generix_type_stat():
         }
     }
 
-    return  json.dumps( {
-        'results': res, 
-        'status': 'OK', 
-        'error': ''
-    } )  
+    return  _ok_response(res)
 
 
 @app.route('/generix/dn_process_docs/<obj_id>', methods=['GET'])
@@ -1045,22 +1147,13 @@ def generix_dn_process_docs(obj_id):
     try:
         obj_type = to_object_type(obj_id)
     except:
-        return  json.dumps( {
-            'results': '', 
-            'status': 'ERR', 
-            'error': 'Wrong object ID format'
-        })
+        return _err_response('Wrong object ID format')
 
     itdef = indexdef.get_type_def(obj_type)
     rows = arango_service.get_dn_process_docs(itdef, obj_id)
     process_docs = _to_process_docs(rows)
 
-    return  json.dumps( {
-            'results': process_docs, 
-            'status': 'OK', 
-            'error': ''
-        })   
-
+    return  _ok_response(process_docs)
 
 @app.route('/generix/up_process_docs/<obj_id>', methods=['GET'])
 def generix_up_process_docs(obj_id):
@@ -1071,22 +1164,13 @@ def generix_up_process_docs(obj_id):
     try:
         obj_type = to_object_type(obj_id)
     except:
-        return  json.dumps( {
-            'results': '', 
-            'status': 'ERR', 
-            'error': 'Wrong object ID format'
-        })
+        return _err_response('Wrong object ID format')
 
     itdef = indexdef.get_type_def(obj_type)
     rows = arango_service.get_up_process_docs(itdef, obj_id)
     process_docs = _to_process_docs(rows)
 
-
-    return  json.dumps( {
-            'results': process_docs, 
-            'status': 'OK', 
-            'error': ''
-        })   
+    return _ok_response(process_docs)
 
 
 def _to_process_docs(rows):
@@ -1136,38 +1220,48 @@ def generix_core_type_metadata(obj_id):
                     'value': doc[prop]
                 }
             )
-        return  json.dumps( {
-            'results': { "items": res, "type": obj_type  }, 
-            'status': 'OK', 
-            'error': ''
-        })          
+        return  _ok_response({ "items": res, "type": obj_type  })
+       
     except:
-        return  json.dumps( {
-            'results': '', 
-            'status': 'ERR', 
-            'error': 'Wrong object ID format'
-        })
+        return _err_response('Wrong object ID format')
 
     
 @app.route('/generix/generate_brick_template', methods=['POST'])
 def generate_brick_template():
-    brick = json.loads(request.form['brick'])
-    data_id = uuid.uuid4().hex
-    file_name = os.path.join(TMP_DIR,_TEMPATE_FILE_PREFIX + data_id)
+    try:
+        data_id = uuid.uuid4().hex
 
-    dim_count = len(brick['dimensions'])
-    data_var_count = len(brick['dataValues'])
+        brick_ds = json.loads(request.form['brick'])
 
-    if dim_count == 1:
-        template.generate_brick_1dm_template(brick, file_name)
-    elif dim_count == 2:
-        if data_var_count == 1:
-            template.generate_brick_2d_template(brick, file_name)
+        # Save birck data structure
+        uds_file_name = os.path.join(TMP_DIR, _UPLOAD_DATA_STRUCTURE_PREFIX + data_id )
+        with open(uds_file_name, 'w') as f:
+            json.dump(brick_ds, f, sort_keys=True, indent=4)
 
-    return send_file(file_name, 
-        as_attachment=True,
-        attachment_filename='data_template.xlsx',
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        utp_file_name = os.path.join(TMP_DIR,_UPLOAD_TEMPLAT_PREFIX + data_id)
+
+        dim_count = len(brick_ds['dimensions'])
+        data_var_count = len(brick_ds['dataValues'])
+
+        if dim_count == 1:
+            template.generate_brick_1dm_template(brick_ds, utp_file_name)
+        elif dim_count == 2:
+            if data_var_count == 1:
+                template.generate_brick_2d_template(brick_ds, utp_file_name)
+
+        return send_file(utp_file_name, 
+            as_attachment=True,
+            attachment_filename='data_template.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        return _err_response(e)
+
+def _ok_response(res):
+    return  json.dumps( {
+            'results': res, 
+            'status': 'OK', 
+            'error': ''
+        })
 
 def _err_response(e):
     return  json.dumps( {
@@ -1183,4 +1277,6 @@ if __name__ == "__main__":
             ssl_context = (cns['_WEB_SERVICE']['cert_pem'], cns['_WEB_SERVICE']['key_pem']) )
     else:
         app.run(host='0.0.0.0', port=port)
+
+
 
