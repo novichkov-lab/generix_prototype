@@ -7,23 +7,23 @@ class ReportBuilderService:
 
     @property
     def process_types(self):
-        return self.__process_term_stat_report( 'Types of processes', 'process' )
+        return self.__process_term_stat_report( 'Data Sorted by Process used to Generate Data', 'process' )
 
     @property
     def process_persons(self):
-        return self.__process_term_stat_report( 'Persons of processes', 'person' )
+        return self.__process_term_stat_report( 'Data Uploaded by Lab & Person', 'person' )
 
     @property
     def process_campaigns(self):
-        return self.__process_term_stat_report( 'Campaigns of processes', 'campaign' )
+        return self.__process_term_stat_report( 'Data Uploaded by Campaign', 'campaign' )
 
     @property
     def brick_types(self):
-        return self.__brick_term_stat_report( 'Data types of bricks', 'data_type' )
+        return self.__brick_term_stat_report( 'Data Uploaded by Category', 'data_type' )
         
     @property
     def brick_dim_types(self):
-        return self.__brick_term_stat_report( 'Dimension types of bricks', 'dim_types' )
+        return self.__brick_term_stat_report( 'Data Sorted by Dimensionality', 'dim_types' )
 
     @property
     def brick_data_var_types(self):
@@ -121,6 +121,25 @@ class PlainReport:
         self.__prop_names = prop_names
         self.__prop_count_name = prop_count_name
         self.__report_items = report_items
+
+    @property
+    def name(self):
+        return self.__report_name
+
+    @property
+    def counts(self):
+        vals = []
+        for item in self.__report_items:
+            vals.append(item.count)
+        return vals
+
+    def values(self, index):
+        vals = []
+        for item in self.__report_items:
+            vals.append(item.value(index))
+        return vals
+    
+
 
     def _repr_html_(self):
         rows = []
