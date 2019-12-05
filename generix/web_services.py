@@ -27,7 +27,7 @@ from . import template
 app = Flask(__name__)
 CORS(app)
 
-DEBUG_MODE = True
+DEBUG_MODE = False
 dp = DataProvider()
 svs = dp._get_services()
 cns = dp._get_constants()
@@ -48,6 +48,25 @@ _UPLOAD_VALIDATION_REPORT_PREFIX = 'uvr_'
 @app.route("/")
 def hello():
     return "Welcome!"
+
+@app.route("/generix/refs_to_core_objects/<data_id>", methods=['GET'])
+def generix_refs_to_core_objects(data_id):
+    try:
+        uvd_file_name = os.path.join(TMP_DIR, _UPLOAD_VALIDATED_DATA_PREFIX + data_id )
+        vdata = json.loads(open(uvd_file_name).read())
+        res = vdata['obj_refs']
+
+        # res = [{
+        #     'var_name': 'qqq',
+        #     'count': 5
+        # },{
+        #     'var_name': 'aaa',
+        #     'count': 4
+        # }]
+        return _ok_response(res)
+    except Exception as e:
+        return _err_response(e)
+
 
 
 @app.route("/generix/search_dimension_microtypes/<value>", methods=['GET'])
@@ -83,11 +102,32 @@ def _search_microtypes(ontology, value):
         return _err_response(e)
 
 @app.route("/generix/search_property_value_oterms", methods=['POST'])
-def search_property_values():
+def search_property_value_oterms():
     query = request.json
     value = query['value']
     parent_term_id = query['microtype']['valid_values_parent']
     return _search_oterms(svs['ontology'].all, value, parent_term_id=parent_term_id)
+
+@app.route("/generix/search_property_value_objrefs", methods=['POST'])
+def search_property_value_objrefs():
+    try:
+        query = request.json
+        term = _get_term({ 'id':query['term_id']})
+        value = query['value']
+        res = []
+
+        res.append({
+            'id' : 0,
+            'text': value + ' - 00'
+        })
+        res.append({
+            'id' : 1,
+            'text': value + ' - 01'
+        })
+        return _ok_response(res)
+    except Exception as e:
+        return _err_response(e)
+
 
 def _search_oterms(ontology, value, parent_term_id=None):
     if value is None:
@@ -307,7 +347,7 @@ def create_brick():
         process_term = _get_term(brick_ds['process'])
         person_term = _get_term(brick_ds['personnel'])
         campaign_term = _get_term(brick_ds['campaign'])
-        input_obj_ids = ['Well:Well0000000']
+        input_obj_ids = br.get_fk_refs(process_ufk=True)
 
         br.save(process_term=process_term, 
             person_term=person_term, 
@@ -333,7 +373,8 @@ def validate_upload():
 
         validated_data = {
             'dims':[],
-            'data_vars': []
+            'data_vars': [],
+            'obj_refs': []
         } 
 
         res = {
@@ -358,7 +399,7 @@ def validate_upload():
                 vtype_term_id = dim_var_ds['type']['id']
                 values = np.array(dim_var['values'], dtype='object')
                 
-                errors = svs['value_validator'].cast_var_values(values, vtype_term_id)
+                errors = svs['value_validator'].cast_var_values(values, vtype_term_id, validated_data['obj_refs'])
 
                 total_count = values.size
                 invalid_count = len(errors) 
@@ -434,7 +475,7 @@ def upload_file():
         if dim_count == 1:
             brick_data = template.parse_brick_F1DM_data(brick_ds, udf_file_name)
         elif dim_count == 2:
-            brick_data = template.parse_brick_F2DT_data(brick_ds, udf_file_name)
+            brick_data = template.parse_brick_F2D_data(brick_ds, udf_file_name)
         else:
             raise ValueError('Brick with %s dimensions is not supported yet' % dim_count)
 
@@ -529,29 +570,50 @@ def _create_brick(brick_ds, brick_data):
         for dim_var_index, dim_var in enumerate(dim['variables']):
             var_type_term = _get_term(dim_var['type'])
             var_units_term = _get_term(dim_var['units'])
-            br.dims[dim_index].add_var(var_type_term, var_units_term, 
-                brick_data['dims'][dim_index]['dim_vars'][dim_var_index]['values'])
+
+            values = brick_data['dims'][dim_index]['dim_vars'][dim_var_index]['values']
+            if var_type_term.microtype_value_scalar_type == 'oterm_ref':
+                for i, val in enumerate(values):
+                    values[i] = _get_term(val)
+
+            v = br.dims[dim_index].add_var(var_type_term, var_units_term, values, 
+                scalar_type=var_type_term.microtype_value_scalar_type)
+            if 'context' in dim_var: 
+                _add_var_context(v, dim_var['context'])
 
     # add data
     for data_var_index, data_var in enumerate(brick_data_vars):
         data_type_term = _get_term(data_var['type'])
         data_units_term = _get_term(data_var['units'])
-        br.add_data_var(data_type_term, data_units_term, 
-            brick_data['data_vars'][data_var_index]['values'])
+        v = br.add_data_var(data_type_term, data_units_term, 
+            brick_data['data_vars'][data_var_index]['values'],
+            scalar_type=data_type_term.microtype_value_scalar_type)
+        if 'context' in dim_var: 
+            _add_var_context(v, dim_var['context'])
 
 
     # add brick properties
     for prop in brick_properties:
         var_type_term = _get_term(prop['type'])
         var_units_term = _get_term(prop['units'])
-        scalarType = prop['scalarType']
+        scalarType = var_type_term.microtype_value_scalar_type
         value = prop['value']
         br.add_attr(var_type_term, var_units_term, scalarType, value)
 
     return br
 
+
+def _add_var_context(brick_var, context_elems):
+    for ce in context_elems:
+        type_term = _get_term(ce.get('type'))
+        units_term = _get_term(ce.get('units'))
+        scalar_type = type_term.microtype_value_scalar_type        
+        value = _get_term(ce.get('value')) if  scalar_type == 'oterm_ref' else ce.get('value')['text']
+        brick_var.add_attr(type_term=type_term, units_term=units_term, 
+            scalar_type=scalar_type, values=value)
+
 def _get_term(term_data):
-    return svs['ontology'].all.find_id( term_data['id'] ) if term_data and term_data['id'] != '' else None
+    return svs['term_provider'].get_term( term_data['id'] ) if term_data and term_data['id'] != '' else None
 
 
 ########################################################################################
@@ -588,6 +650,7 @@ def generix_data_types():
     # Core types
     type_defs = svs['indexdef'].get_type_defs(category=TYPE_CATEGORY_STATIC)
     for td in type_defs:
+        if td.name == 'ENIGMA': continue
         res.append({
             'dataType': td.name, 
             'dataModel': td.name,
@@ -1157,40 +1220,48 @@ def generix_type_stat():
 
 @app.route('/generix/dn_process_docs/<obj_id>', methods=['GET'])
 def generix_dn_process_docs(obj_id):
-    arango_service = svs['arango_service']
-    indexdef = svs['indexdef']
-
-    obj_type = ''
     try:
-        obj_type = to_object_type(obj_id)
-    except:
-        return _err_response('Wrong object ID format')
+        arango_service = svs['arango_service']
+        indexdef = svs['indexdef']
 
-    itdef = indexdef.get_type_def(obj_type)
-    rows = arango_service.get_dn_process_docs(itdef, obj_id)
-    process_docs = _to_process_docs(rows)
+        obj_type = ''
+        try:
+            obj_type = to_object_type(obj_id)
+        except:
+            raise ValueError('Wrong object ID format: %s' % obj_id)
 
-    return  _ok_response(process_docs)
+        itdef = indexdef.get_type_def(obj_type)
+        rows = arango_service.get_dn_process_docs(itdef, obj_id)
+        process_docs = _to_process_docs(rows)
+
+        return  _ok_response(process_docs)
+    except Exception as e:
+        return _err_response(e)
+
 
 @app.route('/generix/up_process_docs/<obj_id>', methods=['GET'])
 def generix_up_process_docs(obj_id):
-    arango_service = svs['arango_service']
-    indexdef = svs['indexdef']
-
-    obj_type = ''
     try:
-        obj_type = to_object_type(obj_id)
-    except:
-        return _err_response('Wrong object ID format')
+        arango_service = svs['arango_service']
+        indexdef = svs['indexdef']
 
-    itdef = indexdef.get_type_def(obj_type)
-    rows = arango_service.get_up_process_docs(itdef, obj_id)
-    process_docs = _to_process_docs(rows)
+        obj_type = ''
+        try:
+            obj_type = to_object_type(obj_id)
+        except:
+            raise ValueError('Wrong object ID format: %s' % obj_id)
 
-    return _ok_response(process_docs)
+        itdef = indexdef.get_type_def(obj_type)
+        rows = arango_service.get_up_process_docs(itdef, obj_id)
+        process_docs = _to_process_docs(rows)
+
+        return _ok_response(process_docs)
+    except Exception as e:
+        return _err_response(e)
 
 
 def _to_process_docs(rows):
+    typedef = svs['typedef']
     indexdef = svs['indexdef']
     process_docs = []
     for row in rows:
@@ -1201,11 +1272,15 @@ def _to_process_docs(rows):
         for doc in row['docs']:
             obj_type = to_object_type(doc['_key'])
             itdef = indexdef.get_type_def(obj_type)
+
+            upk = typedef.get_type_def(obj_type).upk_property_def if obj_type != 'Brick' else None
+            description = doc[upk.name] if upk else ''
+
             docs.append({
                 'id': doc['_key'],
                 'type': obj_type,
                 'category': itdef.category,
-                'description': '' 
+                'description': description
             })
 
         process_docs.append({
@@ -1282,10 +1357,10 @@ def generate_brick_template():
         data_var_count = len(brick_ds['dataValues'])
 
         if dim_count == 1:
-            template.generate_brick_1dm_template(brick_ds, utp_file_name)
+            template.generate_brick_F1DM_template(brick_ds, utp_file_name)
         elif dim_count == 2:
             if data_var_count == 1:
-                template.generate_brick_2d_template(brick_ds, utp_file_name)
+                template.generate_brick_F2D_template(brick_ds, utp_file_name)
 
         return send_file(utp_file_name, 
             as_attachment=True,

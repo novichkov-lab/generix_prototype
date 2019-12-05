@@ -458,7 +458,7 @@ class Brick:
     def id(self):
         return self.__get_attr('__id')
     
-    def set_id(self, id):
+    def _set_id(self, id):
         self.__xds.attrs['__id'] = id
 
     @property
@@ -532,6 +532,55 @@ class Brick:
         q = Query(services.indexdef.get_type_def(TYPE_NAME_BRICK))
         q.has({'id': self.id})
         return q.find_one()
+
+    def get_fk_refs(self, process_ufk=False):
+        fk_refs = set()
+
+        # Collect foreign keys from properties (attrs)
+        for pv in self.attrs:     
+            if pv.type_term.require_mapping:       
+                core_type = pv.type_term.microtype_fk_core_type
+
+                fk_id = None
+                if pv.type_term.is_fk:
+                    fk_id = pv.value
+                elif process_ufk and pv.type_term.is_ufk:
+                    fk_id = self._convert_ufk_to_fk(core_type, pv.value)
+
+                if fk_id is not None:
+                    fk_refs.add('%s:%s' % (core_type, fk_id))
+
+        # Collect foreign keys from dim vars
+        for dim in self.dims:
+            for dim_var in dim.vars:
+                if dim_var.type_term.require_mapping:       
+                    core_type = dim_var.type_term.microtype_fk_core_type
+
+                    fk_ids = []
+                    if dim_var.type_term.is_fk:
+                        fk_ids = dim_var.values
+                    elif process_ufk and dim_var.type_term.is_ufk:
+                        fk_ids = self._convert_ufk_to_fk(core_type, dim_var.values.tolist())
+                    
+                    for fk_id in fk_ids:
+                        fk_refs.add('%s:%s' % (core_type, fk_id))
+
+        # TODO: needs to make a decision whether 
+        #  to collect fk_ids from data_vars
+
+        return fk_refs
+
+    def _convert_ufk_to_fk(self, core_type, ufk_values):
+        index_type_def = services.indexdef.get_type_def(core_type)        
+        query = index_type_def.data_provider.query()
+
+        if type(ufk_values) == list:         
+            pk_upks = query._find_upks(ufk_values)
+            return [pk_upk['pk'] for pk_upk in pk_upks]
+        else:
+            # Single value
+            pk_upks = query._find_upks([ufk_values])
+            return pk_upks[0]['pk'] if len(pk_upks) == 1 else None
 
     def to_json(self, exclude_data_values=False, typed_values_property_name=True):
         return json.dumps(
@@ -894,6 +943,7 @@ class Brick:
 
         self.__data_vars.append(var)
         self.__inflate_data_vars()
+        return var
 
     def mean(self, dim):
         dim_index = dim.dim_index
@@ -992,7 +1042,7 @@ class Brick:
 
         brick_data_holder = BrickDataHolder(self)
         services.workspace.save_data(brick_data_holder)
-        self.set_id(brick_data_holder.id)
+        self._set_id(brick_data_holder.id)
 
         process_data = {
             'person': str(person_term),
@@ -1087,6 +1137,7 @@ class BrickDimension:
 
         self.__vars.append(var)
         self.__inflate_vars()
+        return var
 
     def add_brick_data_var(self, match_src_var, match_dst_var, data_var):
         # index dst values
@@ -1285,7 +1336,10 @@ class BrickVariable:
         
     def __get_attr(self, name):
         return self.__xds[self.__var_prefix].attrs[name]
-            
+
+    def __set_attr(self, name, value):
+        self.__xds[self.__var_prefix].attrs[name] = value
+
     @property    
     def name(self):
         return self.__get_attr('__name')
@@ -1361,6 +1415,14 @@ class BrickVariable:
 
     def has_attrs(self):
         return self.__get_attr('__attr_count') > 0
+
+    def add_attr(self, type_term=None, units_term=None, scalar_type=None, value=None):        
+        pv = PropertyValue(type_term=type_term, units_term=units_term, scalar_type=scalar_type, value=value)
+
+        attr_count =  self.__get_attr('__attr_count')
+        attr_count += 1
+        self.__set_attr('__attr%s' % attr_count, pv)
+        self.__set_attr('__attr_count', attr_count)
 
     # def data_df(self):
     #     return pd.DataFrame(self.data, columns=[self.name])
@@ -1677,6 +1739,7 @@ class BrickTemplateProvider:
 
 
     def upgrade_templates(self):
+        custom_template_id = 1
         for btype in self.__templates['types']:
             data_type_term_id = btype['data_type']
             data_type_term = services.term_provider.get_term(data_type_term_id)
@@ -1687,7 +1750,7 @@ class BrickTemplateProvider:
                     'id': data_type_term.term_id,
                     'text': data_type_term.term_name
                 }
-                
+
                 # update property types
                 if 'properties' in template:
                     for prop in template['properties']:
@@ -1702,6 +1765,21 @@ class BrickTemplateProvider:
                 # update data variable types
                 for data_var in template['data_vars']:
                     self._update_type(data_var['type'])  
+            
+            # Add custom template
+            custom_template_id += 1
+            btype['children'].insert(0, {
+                'id' : 'CT%s' % custom_template_id,
+                'text' : 'Custom %s' % btype['text'],
+                'data_type':{
+                    'id': data_type_term.term_id,
+                    'text': data_type_term.term_name                    
+                },
+                'properties' : [],
+                'dims' :[],
+                'data_vars': []
+            })
+
         self.__upgraded = True                                          
 
     def _update_type(self, ptype):

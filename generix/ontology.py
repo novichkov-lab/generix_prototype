@@ -348,7 +348,9 @@ class Ontology:
             aql = 'FOR x IN %s FILTER %s RETURN x' % (OTERM_COLLECTION_NAME, aql_filter )
         else:
             aql = 'FOR x IN %s FILTER %s RETURN x' % (aql_fulltext, aql_filter )
-
+        
+        # print('aql=%s' % aql)
+        # print('aql_bind:', aql_bind)
         result_set =  self.__arango_service.find(aql, aql_bind, size)
 
         return self.__build_terms(result_set)
@@ -450,7 +452,7 @@ class Ontology:
 
         if parent_term_id is not None and parent_term_id != '':
             aql_bind['parent_term_id'] = parent_term_id
-            aql_filter = '@parent_term_id in x.parent_term_ids'
+            aql_filter = '@parent_term_id in x.parent_path_term_ids'
 
         return TermCollection(self.__find_terms(aql_filter, aql_bind, 
             aql_fulltext=aql_fulltext, size=size))
@@ -680,7 +682,7 @@ class Term:
                     vals = m.groups()
                     self.__microtype_fk_term_id = vals[0]
                     self.__microtype_fk_core_type = vals[1]
-                    self.__microtype_fk_core_prop_name = vals[2]
+                    self.__microtype_fk_core_prop_name = vals[2].lower()
         
 
     '''
@@ -858,6 +860,26 @@ class Term:
     @property
     def require_mapping(self):
         return not not self.microtype_fk
+
+    @property
+    def is_fk(self):
+        if self.require_mapping:
+            core_type = self.microtype_fk_core_type
+            type_def = services.typedef.get_type_def(core_type)
+            prop_def = type_def.property_def(self.microtype_fk_core_prop_name)
+            if prop_def.is_pk:
+                return True
+        return False
+
+    @property
+    def is_ufk(self):
+        if self.require_mapping:
+            core_type = self.microtype_fk_core_type
+            type_def = services.typedef.get_type_def(core_type)
+            prop_def = type_def.property_def(self.microtype_fk_core_prop_name)
+            if prop_def.is_upk:
+                return True
+        return False
 
 
     def to_descriptor(self):

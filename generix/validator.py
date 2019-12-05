@@ -98,7 +98,7 @@ class TermValidatorService:
 
 class ValueValidationService:
 
-    def cast_var_values(self, values, var_term_id):
+    def cast_var_values(self, values, var_term_id, obj_refs=None):
         var_term = services.ontology._get_term(var_term_id)
         scalar_type = var_term.microtype_value_scalar_type
         errors = []
@@ -110,8 +110,11 @@ class ValueValidationService:
             errors = self.cast_values(values, str, 'string')
         elif scalar_type == 'oterm_ref':
             errors = self.cast_oterm_values(values, var_term)
+        elif scalar_type == 'object_ref':
+            errors = self.cast_object_ref_values(values, var_term, obj_refs)
+        else:
+            raise ValueError('Unsupported scalar type %s' % scalar_type)
 
-        # TODO: cast object refs
         return errors
 
     def __validate_values_type(self, values):
@@ -131,7 +134,7 @@ class ValueValidationService:
                 casted_value = None
                 
                 value = it[0].item()
-                if value:
+                if value is not None:
                     try: 
                         casted_value = cast_function(value)
                     except: 
@@ -183,11 +186,66 @@ class ValueValidationService:
                         self.__add_error(errors, it.multi_index, value, 'Term', error)
 
                 if casted_value is not None:
-                    casted_value = str(casted_value)
+                    casted_value = {
+                        'id': casted_value.term_id,
+                        'text': casted_value.term_name
+                    }
                 it[0] = casted_value
                 it.iternext()
         return errors 
 
+    def cast_object_ref_values(self, values, var_term, obj_refs=None):
+        self.__validate_values_type(values)
+
+        if not var_term.require_mapping:
+            raise ValueError('Type term wiht scalar_type=object_ref does not require mapping')
+
+        # Get a unique set of fks
+        values_set = set()
+        for val in np.nditer(values, flags=['refs_ok']):
+            val = val.item()
+            if val is not None:
+                values_set.add(val)
+
+        # Get mapped values
+        index_type_def = services.indexdef.get_type_def(var_term.microtype_fk_core_type)
+        query = index_type_def.data_provider.query()            
+
+        values_mapped = set()
+        if var_term.is_ufk:
+            pk_upks = query._find_upks(list(values_set))
+            for pk_upk in pk_upks:
+                values_mapped.add(pk_upk['upk'])
+        elif var_term.is_fk:
+            pks = query._find_pks(list(values_set))
+            for pk in pks:
+                values_mapped.add(pk)
+
+        # cast values
+        errors = []
+        mappedCount = 0
+        with np.nditer(values, op_flags=['readwrite'], flags=['multi_index', 'refs_ok']) as it:
+            while not it.finished:                 
+                casted_value = None
+                
+                value = it[0].item()
+                if value:
+                    if value in values_mapped:
+                        casted_value = value    
+                        mappedCount += 1
+                    else:
+                        self.__add_error(errors, it.multi_index, value, 'Object Ref', 
+                            'Mapping to core type %s.%s' % (var_term.microtype_fk_core_type, 
+                                var_term.microtype_fk_core_prop_name))
+
+                it[0] = casted_value
+                it.iternext()
+        if obj_refs is not None:
+            obj_refs.append({
+                'var_name': '%s.%s' % (var_term.microtype_fk_core_type, var_term.microtype_fk_core_prop_name),
+                'count': mappedCount
+            })
+        return errors 
 
     def __add_error(self, errors, index, value, cast_type, err_msg = ''):
         errors.append({

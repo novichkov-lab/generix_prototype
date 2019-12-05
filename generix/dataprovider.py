@@ -36,10 +36,12 @@ class DataProvider:
             'ontology': services.ontology,
             'reports' : services.reports,
             'indexdef': services.indexdef,
+            'typedef' : services.typedef,
             'arango_service': services.arango_service,
             'workspace': services.workspace,
             'brick_template_provider': services.brick_template_provider,
-            'value_validator': services.value_validator
+            'value_validator': services.value_validator,
+            'term_provider': services.term_provider
         }
     def _get_constants(self):
         return {
@@ -88,6 +90,9 @@ class EntityProvider:
         self.__index_type_def = index_type_def
         self.__inflate_properties()
 
+        # TODO: hack
+        index_type_def._register_data_provider(self)
+
     def __inflate_properties(self):
         for index_prop_def in self.__index_type_def.property_defs:
             key = to_var_name('PROPERTY_', index_prop_def.name)
@@ -109,7 +114,12 @@ class EntityProvider:
 
 class BrickProvider(EntityProvider):
     def __init__(self):
-        super().__init__(services.indexdef.get_type_def(TYPE_NAME_BRICK) )
+        index_type_def = services.indexdef.get_type_def(TYPE_NAME_BRICK) 
+        super().__init__(index_type_def)
+
+        # TODO: hack
+        index_type_def._register_data_provider(self)
+
 
     @staticmethod
     def _load_brick(brick_id):
