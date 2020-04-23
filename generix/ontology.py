@@ -25,8 +25,8 @@ _TERM_IS_DIMENSION = re.compile(r'is_valid_dimension\s+"true"')
 _TERM_IS_DIMENSION_VARIABLE = re.compile(r'is_valid_dimension_variable\s+"true"')
 _TERM_IS_PROPERTY = re.compile(r'is_valid_property\s+"true"')
 _TERM_IS_HIDDEN = re.compile(r'is_hidden\s+"true"')
-_TERM_VALID_UNITES = re.compile(r'valid_units\s+"([\w+:\d+\s*]+)"')
-_TERM_VALID_UNITES_PARENT = re.compile(r'valid_units_parent\s+"([\w+:\d+\s*]+)"')
+_TERM_VALID_UNITS = re.compile(r'valid_units\s+"([\w+:\d+\s*]+)"')
+_TERM_VALID_UNITS_PARENT = re.compile(r'valid_units_parent\s+"([\w+:\d+\s*]+)"')
 _TERM_OREF = re.compile(r'ORef:\s+(\w+:\d+)')
 _TERM_REF = re.compile(r'Ref:\s+(\w+:\d+\.\w+\.\w+)')
 _MICROTYPE_FK_PATTERN = re.compile(r'(\w+:\d+)\.(\w+)\.(\w+)')
@@ -43,9 +43,9 @@ class OntologyService:
             print('Ontology collection is present already')
         
         # build indices
-        print('Ensure ontoloy indices')
+        print('Ensure ontology indices')
         collection = services.arango_service.db[OTERM_COLLECTION_NAME]
-        collection.ensureFulltextIndex(['term_name'],minLength=3)
+        collection.ensureFulltextIndex(['term_name'],minLength=1)
         collection.ensureHashIndex(['term_id'], unique=True)
         collection.ensureHashIndex(['ontology'])
 
@@ -57,6 +57,7 @@ class OntologyService:
             for ont in doc['ontologies']:
                 print('Doing ontology: ' + ont['name'])
                 if 'ignore' in ont and ont['ignore']:
+                    print(' (skipping because of ignore directive)')
                     continue
                 self._upload_ontology(services._IMPORT_DIR_ONTOLOGY, ont)
  
@@ -190,11 +191,11 @@ class OntologyService:
                             if m is not None:
                                 term_value_scalar_type = m.groups()[0]
 
-                            m = _TERM_VALID_UNITES.match(pv)
+                            m = _TERM_VALID_UNITS.match(pv)
                             if m is not None:
                                 term_valid_units = m.groups()[0].split()
                             
-                            m = _TERM_VALID_UNITES_PARENT.match(pv)
+                            m = _TERM_VALID_UNITS_PARENT.match(pv)
                             if m is not None:
                                 term_valid_units_parents = m.groups()[0].split()
 
@@ -248,7 +249,17 @@ class OntologyService:
         return terms
 
     def _clean_ontology(self, ont_name):
-        pass
+        print("Deleting terms in %s" % ont_name)
+        aql = """
+            FOR x IN @@collection
+            FILTER x.ontology_id==@value
+            REMOVE x in @@collection
+        """
+        aql_bind = {
+            '@collection': OTERM_COLLECTION_NAME,
+            'value': ont_name
+        }
+        self.__arango_service.db.AQLQuery(aql, bindVars=aql_bind)
 
     @property
     def units(self):
@@ -589,7 +600,7 @@ class TermCollection:
 
 class Term:
     '''
-        Supports lazzy loading
+        Supports lazy loading
     '''
 
     def __init__(self, term_id, 
@@ -748,15 +759,13 @@ class Term:
 
     def __safe_property(self, prop_name):
         if self.__dict__[prop_name] is None and not self.__persisted:
-            self.__lazzy_load()
+            self.__lazy_load()
         return self.__getattribute__(prop_name)
 
     def refresh(self):
-        self.__lazzy_load()
+        self.__lazy_load()
 
-    def __lazzy_load(self):
-        #TODO: init all properties
-
+    def __lazy_load(self):
         term = services.ontology.all.find_id(self.term_id)
         if term is None:
             raise ValueError('Can not find term with id: %s' % self.term_id)
@@ -951,10 +960,10 @@ class Term:
                     self.__parent_terms.append(term)
                 else:
                     raise ValueError('Can not find parent "%s" for term "%s"' % 
-                        (term.term_id, self.term_id))
+                        (pid, self.term_id))
 
 
-class CashedTermProvider:
+class CachedTermProvider:
     def __init__(self):
         self.__id_2_term = {}
 
